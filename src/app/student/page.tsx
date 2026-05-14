@@ -31,7 +31,7 @@ export default async function StudentPage() {
     <div className="flex flex-col h-screen bg-slate-50">
       <Navbar session={liveSession} />
       <PhaseBar currentPhase={phase} />
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden pb-[2%]">
         <StudentRouter
           session={liveSession}
           phase={phase}
