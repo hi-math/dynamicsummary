@@ -8,19 +8,23 @@ import {
   getPassages,
   getAllStudentsData,
   getMentors,
+  getPromptAssets,
+  getComprehensionQuestionsAdmin,
 } from '@/actions/admin';
 
 export default async function AdminPage() {
   const session = await getSession();
   if (!session || session.role !== 'admin') redirect('/');
 
-  const [users, api, prompts, passages, studentsData, mentors] = await Promise.all([
+  const [users, api, prompts, passages, studentsData, mentors, promptAssets, comprehensionQs] = await Promise.all([
     getUsers(),
     getAPISettings(),
     getPrompts(),
     getPassages(),
     getAllStudentsData(),
     getMentors(),
+    getPromptAssets(),
+    getComprehensionQuestionsAdmin(),
   ]);
 
   return (
@@ -32,6 +36,8 @@ export default async function AdminPage() {
       initialPassages={passages}
       initialStudentsData={studentsData}
       initialMentors={mentors}
+      initialPromptAssets={promptAssets}
+      initialComprehensionQs={comprehensionQs}
     />
   );
 }

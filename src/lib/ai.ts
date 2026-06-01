@@ -95,6 +95,21 @@ async function callGemini(
   return data.candidates[0].content.parts[0].text as string;
 }
 
+// Single-node call with an arbitrary system prompt (used by DA pipeline)
+export async function callLLMNode(
+  systemPrompt: string,
+  userInput: string,
+  api: APISettings,
+): Promise<string> {
+  const messages: ChatMessage[] = [{ role: 'user', content: userInput }];
+  switch (api.provider) {
+    case 'openai':    return callOpenAI(messages, systemPrompt, api);
+    case 'anthropic': return callAnthropic(messages, systemPrompt, api);
+    case 'gemini':    return callGemini(messages, systemPrompt, api);
+    default: throw new Error(`Unknown provider: ${api.provider}`);
+  }
+}
+
 export async function callAI(
   messages: ChatMessage[],
   passageContent: string,

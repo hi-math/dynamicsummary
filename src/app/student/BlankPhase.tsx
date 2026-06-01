@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { PHASE_LABEL, getSubmitLabel } from '@/lib/phases';
+import { PHASE_LABEL, getSubmitLabel, PHASES } from '@/lib/phases';
 import { studentAdvancePhase } from '@/actions/student';
 import { useToast } from '@/components/ui/Toast';
 
@@ -35,7 +35,7 @@ export default function BlankPhase({ phase, studentId }: { phase: string; studen
 
       <button
         onClick={handleAdvance}
-        disabled={loading || phase === 'posttest'}
+        disabled={loading || phase === PHASES[PHASES.length - 1]}
         className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors"
       >
         {loading ? '처리 중...' : submitLabel}

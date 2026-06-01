@@ -55,8 +55,8 @@ export default function DraftPhase({
 
   return (
     <div className="h-full flex flex-col p-3 gap-3 min-h-0">
-      {/* Top row: 75% */}
-      <div className="flex gap-3 min-h-0" style={{ flex: '3' }}>
+      {/* Top row — fills remaining space */}
+      <div className="flex gap-3 min-h-0 flex-1">
         <div className="flex-1 min-h-0">
           <ReadingPassagePanel title={passage.title} content={passage.content} />
         </div>
@@ -71,12 +71,12 @@ export default function DraftPhase({
         </div>
       </div>
 
-      {/* Bottom row: 25% */}
-      <div className="flex gap-3 min-h-0" style={{ flex: '1' }}>
-        <div className="flex-1">
+      {/* Bottom row — fixed height */}
+      <div className="flex gap-3 shrink-0 h-52">
+        <div className="flex-1 min-h-0">
           <ReferenceToolsPanel />
         </div>
-        <div className="flex-1">
+        <div className="flex-1 min-h-0">
           <NotesPanel
             initialValue={sessionData?.notes ?? ''}
             onBlur={handleNotesBlur}

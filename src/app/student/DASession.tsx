@@ -7,8 +7,8 @@ import SummaryPanel from '@/components/panels/SummaryPanel';
 import ChatPanel from '@/components/panels/ChatPanel';
 import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
-import { submitToAI, saveNotes, saveSummary, studentAdvancePhase } from '@/actions/student';
-import type { SessionCookie, SessionData, AIMessage, HumanMessage } from '@/types';
+import { submitToAI, saveNotes, saveSummary, studentAdvancePhase, startDASession } from '@/actions/student';
+import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
 
@@ -19,6 +19,7 @@ export default function DASession({
   sessionData,
   aiMessages,
   humanMessages,
+  initialDAState,
 }: {
   session: SessionCookie;
   phase: string;
@@ -26,6 +27,7 @@ export default function DASession({
   sessionData: SessionData | null;
   aiMessages: AIMessage[];
   humanMessages: HumanMessage[];
+  initialDAState?: DASessionState | null;
 }) {
   const { showToast } = useToast();
   const [submitted, setSubmitted] = useState(!!sessionData?.submitted_at);
@@ -74,8 +76,8 @@ export default function DASession({
     <div className="h-full flex p-3 gap-3 min-h-0">
       {/* Left: 4 panels (reading+summary top, reftools+notes bottom) */}
       <div className="flex-1 flex flex-col gap-3 min-h-0">
-        {/* Top row — 75% */}
-        <div className="flex gap-3 min-h-0" style={{ flex: '3' }}>
+        {/* Top row — fills remaining space */}
+        <div className="flex gap-3 min-h-0 flex-1">
           <div className="flex-1 min-h-0">
             <ReadingPassagePanel title={passage.title} content={passage.content} />
           </div>
@@ -91,8 +93,8 @@ export default function DASession({
           </div>
         </div>
 
-        {/* Bottom row — 25% */}
-        <div className="flex gap-3 min-h-0" style={{ flex: '1' }}>
+        {/* Bottom row — fixed height */}
+        <div className="flex gap-3 shrink-0 h-52">
           <div className="flex-1 min-h-0">
             <ReferenceToolsPanel />
           </div>
@@ -120,6 +122,7 @@ export default function DASession({
         onAdvance={handleAdvance}
         collapsed={chatCollapsed}
         onToggleCollapse={() => setChatCollapsed((v) => !v)}
+        initialDAState={initialDAState}
       />
     </div>
   );

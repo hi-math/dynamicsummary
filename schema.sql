@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK (role IN ('admin', 'mentor', 'student')),
   team TEXT CHECK (team IN ('chatbot', 'human')),
   mentor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-  current_phase TEXT NOT NULL DEFAULT 'pretest',
+  current_phase TEXT NOT NULL DEFAULT 'cycle1_draft',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -40,8 +40,53 @@ CREATE TABLE IF NOT EXISTS prompts (
 
 -- Passages
 CREATE TABLE IF NOT EXISTS passages (
-  cycle_key TEXT PRIMARY KEY CHECK (cycle_key IN ('pretest', 'cycle1', 'cycle2', 'cycle3', 'posttest')),
+  cycle_key TEXT PRIMARY KEY CHECK (cycle_key IN ('cycle1', 'cycle2', 'cycle3', 'cycle4')),
   title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Comprehension questions per cycle (array stored as JSONB)
+-- Each question: { id, type: 'mc'|'sa', stem, options?: string[], answer?: string }
+CREATE TABLE IF NOT EXISTS comprehension_questions (
+  cycle_key TEXT PRIMARY KEY REFERENCES passages(cycle_key) ON DELETE CASCADE,
+  questions JSONB NOT NULL DEFAULT '[]',
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Comprehension answers per student per phase
+CREATE TABLE IF NOT EXISTS comprehension_answers (
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  phase TEXT NOT NULL,
+  answers JSONB NOT NULL DEFAULT '{}',  -- { question_id: answer_text }
+  elapsed_seconds INTEGER,
+  submitted_at TIMESTAMPTZ,
+  PRIMARY KEY (student_id, phase)
+);
+
+-- DA session state per student per phase (chatbot team)
+CREATE TABLE IF NOT EXISTS da_session_state (
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  phase TEXT NOT NULL,
+  priority_queue JSONB NOT NULL DEFAULT '[]',          -- string[] top-3 items
+  current_item_idx INTEGER NOT NULL DEFAULT 0,
+  current_step INTEGER NOT NULL DEFAULT 1,
+  item_identification_cumulative BOOLEAN NOT NULL DEFAULT FALSE,
+  item_verbalization_cumulative BOOLEAN NOT NULL DEFAULT FALSE,
+  resolutions JSONB NOT NULL DEFAULT '{}',             -- { item_key: boolean }
+  session_complete BOOLEAN NOT NULL DEFAULT FALSE,
+  diagnosis_confidence TEXT CHECK (diagnosis_confidence IN ('high','medium','low')),
+  assessor_output JSONB,                               -- final adopted Assessor output
+  assessor_outputs_all JSONB,                          -- all Assessor attempts (for low confidence)
+  verifier_notes_all JSONB,                            -- all Verifier notes
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (student_id, phase)
+);
+
+-- Prompt assets (20 text files the admin edits)
+CREATE TABLE IF NOT EXISTS prompt_assets (
+  key TEXT PRIMARY KEY,
   content TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -90,13 +135,17 @@ ALTER TABLE passages DISABLE ROW LEVEL SECURITY;
 ALTER TABLE session_data DISABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_messages DISABLE ROW LEVEL SECURITY;
 ALTER TABLE human_messages DISABLE ROW LEVEL SECURITY;
+ALTER TABLE comprehension_questions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE comprehension_answers DISABLE ROW LEVEL SECURITY;
+ALTER TABLE da_session_state DISABLE ROW LEVEL SECURITY;
+ALTER TABLE prompt_assets DISABLE ROW LEVEL SECURITY;
 
 -- ============================================================
 -- Seed data
 -- ============================================================
 
 INSERT INTO users (id, name, role, team, current_phase)
-VALUES ('admin', '관리자', 'admin', NULL, 'pretest')
+VALUES ('admin', '관리자', 'admin', NULL, 'cycle1_draft')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO api_settings (id, provider, openai_key, openai_model, anthropic_key, anthropic_model, gemini_key, gemini_model)
@@ -113,9 +162,36 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO passages (cycle_key, title, content)
 VALUES
-  ('pretest', '', ''),
   ('cycle1', '', ''),
   ('cycle2', '', ''),
   ('cycle3', '', ''),
-  ('posttest', '', '')
+  ('cycle4', '', '')
 ON CONFLICT (cycle_key) DO NOTHING;
+
+INSERT INTO comprehension_questions (cycle_key, questions)
+VALUES ('cycle1','[]'),('cycle2','[]'),('cycle3','[]'),('cycle4','[]')
+ON CONFLICT (cycle_key) DO NOTHING;
+
+-- Seed 20 prompt asset slots
+INSERT INTO prompt_assets (key, content) VALUES
+  ('prompt_assessor', ''),
+  ('prompt_assessor_verifier', ''),
+  ('prompt_classifier', ''),
+  ('prompt_evaluator', ''),
+  ('prompt_reexplainer', ''),
+  ('prompt_deflector', ''),
+  ('prompt_mediator_common', ''),
+  ('prompt_main_idea_coverage', ''),
+  ('prompt_condensation', ''),
+  ('prompt_content_accuracy', ''),
+  ('prompt_paraphrasing', ''),
+  ('prompt_organization', ''),
+  ('prompt_language_use', ''),
+  ('knowledge_common', ''),
+  ('knowledge_main_idea_coverage', ''),
+  ('knowledge_condensation', ''),
+  ('knowledge_content_accuracy', ''),
+  ('knowledge_paraphrasing', ''),
+  ('knowledge_organization', ''),
+  ('knowledge_language_use', '')
+ON CONFLICT (key) DO NOTHING;

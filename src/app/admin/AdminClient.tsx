@@ -29,6 +29,8 @@ export default function AdminClient({
   initialPassages,
   initialStudentsData,
   initialMentors,
+  initialPromptAssets,
+  initialComprehensionQs,
 }: {
   session: SessionCookie;
   initialUsers: User[];
@@ -37,6 +39,8 @@ export default function AdminClient({
   initialPassages: Passage[];
   initialStudentsData: unknown[];
   initialMentors: User[];
+  initialPromptAssets: Record<string, string>;
+  initialComprehensionQs: unknown[];
 }) {
   const [tab, setTab] = useState<Tab>('users');
 
@@ -67,8 +71,8 @@ export default function AdminClient({
           <main className="flex-1 overflow-y-auto p-6">
             {tab === 'users' && <UsersTab initialUsers={initialUsers} initialMentors={initialMentors} />}
             {tab === 'api' && <APITab initialAPI={initialAPI} />}
-            {tab === 'prompts' && <PromptsTab initialPrompts={initialPrompts} />}
-            {tab === 'passages' && <PassagesTab initialPassages={initialPassages} />}
+            {tab === 'prompts' && <PromptsTab initialPrompts={initialPrompts} initialAssets={initialPromptAssets} />}
+            {tab === 'passages' && <PassagesTab initialPassages={initialPassages} initialComprehensionQs={initialComprehensionQs as never} />}
             {tab === 'data' && <DataTab initialStudentsData={initialStudentsData as never} />}
           </main>
         </div>

@@ -1,11 +1,12 @@
 'use client';
 
-import { isBlankPhase, isDraftPhase, isDAPhase } from '@/lib/phases';
-import BlankPhase from './BlankPhase';
+import { isDraftPhase, isComprehensionPhase, isDAPhase, isRevisionPhase } from '@/lib/phases';
 import DraftPhase from './DraftPhase';
+import ComprehensionPhase from './ComprehensionPhase';
 import DASession from './DASession';
+import RevisionPhase from './RevisionPhase';
 import { ToastProvider } from '@/components/ui/Toast';
-import type { SessionCookie, SessionData, AIMessage, HumanMessage } from '@/types';
+import type { SessionCookie, SessionData, AIMessage, HumanMessage, ComprehensionQuestion, DASessionState } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
 
@@ -16,6 +17,9 @@ export default function StudentRouter({
   sessionData,
   aiMessages,
   humanMessages,
+  comprehensionQuestions,
+  comprehensionSubmitted,
+  daSessionState,
 }: {
   session: SessionCookie;
   phase: string;
@@ -23,16 +27,26 @@ export default function StudentRouter({
   sessionData: SessionData | null;
   aiMessages: AIMessage[];
   humanMessages: HumanMessage[];
+  comprehensionQuestions: ComprehensionQuestion[];
+  comprehensionSubmitted: boolean;
+  daSessionState: DASessionState | null;
 }) {
   return (
     <ToastProvider>
-      {isBlankPhase(phase) && <BlankPhase phase={phase} studentId={session.id} />}
       {isDraftPhase(phase) && (
         <DraftPhase
           session={session}
           phase={phase}
           passage={passage}
           sessionData={sessionData}
+        />
+      )}
+      {isComprehensionPhase(phase) && (
+        <ComprehensionPhase
+          session={session}
+          phase={phase}
+          questions={comprehensionQuestions}
+          alreadySubmitted={comprehensionSubmitted}
         />
       )}
       {isDAPhase(phase) && (
@@ -43,6 +57,15 @@ export default function StudentRouter({
           sessionData={sessionData}
           aiMessages={aiMessages}
           humanMessages={humanMessages}
+          initialDAState={daSessionState}
+        />
+      )}
+      {isRevisionPhase(phase) && (
+        <RevisionPhase
+          session={session}
+          phase={phase}
+          passage={passage}
+          sessionData={sessionData}
         />
       )}
     </ToastProvider>

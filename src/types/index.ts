@@ -68,3 +68,61 @@ export type SessionCookie = {
   team: Team | null;
   name: string;
 };
+
+// ─── Comprehension ────────────────────────────────────────────────────────────
+
+export type QuestionType = 'mc' | 'sa';
+
+export type ComprehensionQuestion = {
+  id: string;
+  type: QuestionType;
+  stem: string;
+  options?: string[];  // mc only
+  answer?: string;     // optional model answer (not shown to student)
+};
+
+// ─── DA pipeline ─────────────────────────────────────────────────────────────
+
+export type Severity = 'high' | 'medium' | 'low';
+export type DiagnosisConfidence = 'high' | 'medium' | 'low';
+export type Classification = 'on_track' | 'confusion' | 'off_topic';
+
+export type DescriptorDiagnosis = {
+  key: string;
+  severity: Severity;
+  evidence: {
+    problem_location: string;
+    evidence_text: string;
+    missing_content?: string;
+  };
+};
+
+export type ItemDiagnosis = {
+  detected_descriptors: DescriptorDiagnosis[];
+  affects_meaning?: boolean;  // language_use only
+};
+
+export type AssessorOutput = {
+  items: Record<string, ItemDiagnosis>;
+};
+
+export type DASessionState = {
+  priority_queue: string[];
+  current_item_idx: number;
+  current_step: number;
+  item_identification_cumulative: boolean;
+  item_verbalization_cumulative: boolean;
+  resolutions: Record<string, boolean>;
+  session_complete: boolean;
+  diagnosis_confidence: DiagnosisConfidence | null;
+  assessor_output: AssessorOutput | null;
+};
+
+export type TurnResult = {
+  utterance: string;
+  updated_state: DASessionState;
+  resolution_achieved: boolean;
+  tab_unlocked: boolean;
+  session_complete: boolean;
+  classification: Classification;
+};

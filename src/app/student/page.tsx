@@ -1,10 +1,12 @@
 import { redirect } from 'next/navigation';
 import { getSession } from '@/lib/auth';
-import { getSessionData, getAIMessages, getPassage, getCurrentUser } from '@/actions/student';
+import {
+  getSessionData, getAIMessages, getPassage, getCurrentUser,
+  getComprehensionQuestions, getDASessionState,
+} from '@/actions/student';
 import { getHumanMessages } from '@/actions/mentor';
-import { cycleKeyFromPhase } from '@/lib/phases';
+import { cycleKeyFromPhase, isComprehensionPhase } from '@/lib/phases';
 import Navbar from '@/components/Navbar';
-import PhaseBar from '@/components/PhaseBar';
 import StudentRouter from './StudentRouter';
 
 export default async function StudentPage() {
@@ -24,13 +26,31 @@ export default async function StudentPage() {
     getHumanMessages(session.id),
   ]);
 
-  // Keep session cookie team info in sync with DB
+  // Comprehension questions (only needed on comprehension phase)
+  const comprehensionQuestions = isComprehensionPhase(phase)
+    ? await getComprehensionQuestions(cycleKey)
+    : [];
+
+  // Comprehension already submitted?
+  const comprehensionSubmitted = isComprehensionPhase(phase)
+    ? !!(await import('@/lib/supabase-server').then(async ({ createServerClient }) => {
+        const sb = createServerClient();
+        const { data } = await sb.from('comprehension_answers')
+          .select('submitted_at').eq('student_id', session.id).eq('phase', phase).single();
+        return data?.submitted_at;
+      }))
+    : false;
+
+  // DA session state (only needed on da phase)
+  const daSessionState = phase.endsWith('_da')
+    ? await getDASessionState(session.id, phase)
+    : null;
+
   const liveSession = { ...session, team: user.team };
 
   return (
     <div className="flex flex-col h-screen bg-slate-50">
-      <Navbar session={liveSession} />
-      <PhaseBar currentPhase={phase} />
+      <Navbar session={liveSession} currentPhase={phase} />
       <div className="flex-1 overflow-hidden pb-[2%]">
         <StudentRouter
           session={liveSession}
@@ -39,6 +59,9 @@ export default async function StudentPage() {
           sessionData={sessionData}
           aiMessages={aiMessages}
           humanMessages={humanMessages}
+          comprehensionQuestions={comprehensionQuestions}
+          comprehensionSubmitted={comprehensionSubmitted}
+          daSessionState={daSessionState}
         />
       </div>
     </div>

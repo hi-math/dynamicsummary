@@ -1,0 +1,153 @@
+{
+  "items": [
+    {
+      "key": "main_idea_coverage",
+      "label": "핵심 내용 선별",
+      "question": "원문에서 포함해야 할 핵심 정보를 선별했는가?",
+      "category": "content",
+      "subcategory": "macro",
+      "descriptors": [
+        {
+          "key": "key_idea_omission",
+          "definition": "원문의 단락별 핵심 주장이 누락됨",
+          "signal": "원문 단락 중 main point가 summary에 나타나지 않음"
+        },
+        {
+          "key": "idea_unit_misidentification",
+          "definition": "핵심이 아닌 정보를 핵심으로 잘못 선별함",
+          "signal": "summary가 강조하는 내용이 원문에서는 부차적 정보임"
+        },
+        {
+          "key": "superordination_failure",
+          "definition": "열거 항목을 상위 개념으로 통합하지 못하고 그대로 나열함",
+          "signal": "원문의 열거가 상위 개념으로 묶이지 않고 그대로 옮겨짐"
+        }
+      ]
+    },
+    {
+      "key": "condensation",
+      "label": "정보 압축",
+      "question": "불필요한 정보를 제거하고 압축했는가?",
+      "category": "content",
+      "subcategory": "macro",
+      "descriptors": [
+        {
+          "key": "non_essential_inclusion",
+          "definition": "trivial 정보(예시, 세부사항, 부연)가 과도하게 포함됨",
+          "signal": "summary에 예시, 수치, 세부 설명 등이 main idea와 함께 포함됨"
+        },
+        {
+          "key": "redundant_inclusion",
+          "definition": "중복된 정보가 반복 포함됨",
+          "signal": "같은 내용이 서로 다른 표현으로 두 번 이상 나타남"
+        },
+        {
+          "key": "source_length_proximity",
+          "definition": "전반적 압축 시도 부재. 정보량이 원문과 지나치게 유사함",
+          "signal": "summary의 정보량/길이가 원문 대비 충분히 축약되지 않음"
+        }
+      ]
+    },
+    {
+      "key": "content_accuracy",
+      "label": "원문 충실성",
+      "question": "전달된 내용이 원문에 충실한가?",
+      "category": "content",
+      "subcategory": "macro",
+      "descriptors": [
+        {
+          "key": "meaning_distortion",
+          "definition": "원문의 정보를 잘못 이해하거나 변형하여 전달함",
+          "signal": "원문에 있는 내용인데 의미가 다르게 표현됨"
+        },
+        {
+          "key": "personal_opinion_insertion",
+          "definition": "원문에 없는 학생 자신의 견해·평가·추론이 포함됨",
+          "signal": "원문에 없는 내용이 사실처럼 또는 평가적 표현으로 서술됨"
+        }
+      ]
+    },
+    {
+      "key": "paraphrasing",
+      "label": "원문 재진술",
+      "question": "원문 표현을 자기 말로 재진술했는가?",
+      "category": "content",
+      "subcategory": "micro",
+      "descriptors": [
+        {
+          "key": "verbatim_copying",
+          "definition": "5단어 이상 연속 복사 (Keck near copy)",
+          "signal": "원문의 5단어 이상이 연속하여 그대로 옮겨진 구간이 있음"
+        },
+        {
+          "key": "patchwriting",
+          "definition": "3-4단어 연속 복사 또는 단어 몇 개만 치환 (Keck minimal revision)",
+          "signal": "원문의 3-4단어가 연속 복사되거나, 1-2개 단어만 동의어로 치환된 부분이 있음"
+        },
+        {
+          "key": "limited_transformation",
+          "definition": "어휘 치환 수준에 그치고 sentence structure 변형이 없음",
+          "signal": "어휘는 바꿨으나 문장 구조가 원문과 동일하게 유지됨"
+        }
+      ]
+    },
+    {
+      "key": "organization",
+      "label": "paragraph 구조",
+      "question": "Summary가 하나의 완결된 paragraph로서 유기적으로 조직되었는가?",
+      "category": "content",
+      "subcategory": "task-specific",
+      "descriptors": [
+        {
+          "key": "topic_sentence_absence",
+          "definition": "전체 내용을 포괄하는 topic sentence가 없음",
+          "signal": "summary의 첫 부분에 전체 내용을 포괄하는 문장이 없음"
+        },
+        {
+          "key": "topic_sentence_inadequacy",
+          "definition": "topic sentence가 있지만 main idea를 충분히 포괄하지 못함",
+          "signal": "topic sentence가 있으나 부분적 내용만 다룸 또는 부정확함"
+        },
+        {
+          "key": "concluding_sentence_absence",
+          "definition": "concluding sentence가 없거나 불충분함",
+          "signal": "summary가 마무리 없이 갑자기 끝남"
+        },
+        {
+          "key": "supporting_structure_weakness",
+          "definition": "supporting sentences가 topic sentence와 논리적으로 연결되지 않음",
+          "signal": "supporting 문장들이 topic sentence를 뒷받침하지 않거나 무관함"
+        },
+        {
+          "key": "internal_coherence_failure",
+          "definition": "문장 간 논리적 흐름이 끊기거나 나열식으로 구성됨",
+          "signal": "문장 간 연결이 부자연스럽거나 단순 나열에 그침"
+        }
+      ]
+    },
+    {
+      "key": "language_use",
+      "label": "언어 형식",
+      "question": "언어 형식이 정확한가?",
+      "category": "language",
+      "subcategory": null,
+      "descriptors": [
+        {
+          "key": "grammatical_error",
+          "definition": "문법 오류가 있음 (Vann et al. 1984 error gravity 기준 참조)",
+          "signal": "시제, 일치, 관사, 전치사 등의 문법 오류"
+        },
+        {
+          "key": "lexical_error",
+          "definition": "어휘 선택이 부적절하거나 의미가 불명확함",
+          "signal": "word choice 오류, collocation 오류"
+        },
+        {
+          "key": "sentence_structure_error",
+          "definition": "문장 구조가 불완전하거나 어색함",
+          "signal": "sentence fragment, run-on, awkward construction"
+        }
+      ]
+    }
+  ]
+}

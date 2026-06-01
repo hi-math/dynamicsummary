@@ -32,7 +32,7 @@ export async function createUser(formData: FormData) {
     name,
     role,
     team: team || null,
-    current_phase: 'pretest',
+    current_phase: 'cycle1_draft',
   });
 
   if (error) {
@@ -196,6 +196,44 @@ export async function savePassage(formData: FormData) {
   });
   if (error) return { error: error.message };
   return { success: true };
+}
+
+// ─── Prompt Assets ────────────────────────────────────────────────────────────
+
+export async function getPromptAssets(): Promise<Record<string, string>> {
+  const supabase = createServerClient();
+  const { data } = await supabase.from('prompt_assets').select('key, content');
+  return Object.fromEntries((data ?? []).map((r: { key: string; content: string }) => [r.key, r.content]));
+}
+
+export async function savePromptAsset(key: string, content: string) {
+  const supabase = createServerClient();
+  const { error } = await supabase.from('prompt_assets').upsert(
+    { key, content, updated_at: new Date().toISOString() },
+    { onConflict: 'key' },
+  );
+  if (error) return { error: error.message };
+  revalidatePath('/admin');
+  return { success: true };
+}
+
+// ─── Comprehension Questions ──────────────────────────────────────────────────
+
+export async function saveComprehensionQuestions(cycleKey: string, questions: unknown[]) {
+  const supabase = createServerClient();
+  const { error } = await supabase.from('comprehension_questions').upsert(
+    { cycle_key: cycleKey, questions, updated_at: new Date().toISOString() },
+    { onConflict: 'cycle_key' },
+  );
+  if (error) return { error: error.message };
+  revalidatePath('/admin');
+  return { success: true };
+}
+
+export async function getComprehensionQuestionsAdmin() {
+  const supabase = createServerClient();
+  const { data } = await supabase.from('comprehension_questions').select('*');
+  return data ?? [];
 }
 
 // ─── Data / Export ────────────────────────────────────────────────────────────
