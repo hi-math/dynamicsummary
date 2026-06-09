@@ -229,6 +229,7 @@ export async function initDASession(
     current_step: 1,
     item_identification_cumulative: false,
     item_verbalization_cumulative: false,
+    item_resolution_pending: false,
     resolutions: {},
     session_complete: false,
     diagnosis_confidence: confidence,
@@ -385,6 +386,24 @@ Maintain a single, consistent tutor persona. Do NOT reveal internal node decisio
   return await callLLMNode(sysPrompt, userInput, api);
 }
 
+// ─── Confirmation classifier (used when item_resolution_pending = true) ──────
+
+async function runConfirmationClassifier(
+  studentMessage: string,
+  api: APISettings,
+): Promise<boolean> {
+  const sysPrompt = `You are a classifier. The tutor just asked the student if they want to move on to the next task.
+Determine if the student's response is a CONFIRMATION (positive/agreeable) or NOT.
+Respond ONLY with valid JSON: { "confirming": true | false }
+Confirming examples: "네", "응", "갑시다", "넘어가요", "그래요", "알겠어요", "yes", "sure", "okay", "ok", "넘어가겠습니다"
+NOT confirming examples: "아니요", "잠깐만요", "궁금한 게 있어요", "no", "wait"`;
+
+  const raw = await callLLMNode(sysPrompt, studentMessage, api);
+  const json = raw.match(/\{[\s\S]*\}/)?.[0];
+  if (!json) return false;
+  try { return JSON.parse(json).confirming === true; } catch { return false; }
+}
+
 // ─── Main one-turn entry point ────────────────────────────────────────────────
 
 export async function processTurn(
@@ -407,11 +426,37 @@ export async function processTurn(
     };
   }
 
-  // [코드] Classifier 호출
-  const classification = await runClassifier(studentMessage, currentItem, state, prompts, api);
-
   let updatedState = { ...state };
   let utterance: string;
+
+  // ── Resolution pending: student is responding to "다음 탭으로 넘어가볼까요?" ──
+  if (state.item_resolution_pending) {
+    const confirming = await runConfirmationClassifier(studentMessage, api);
+    if (confirming) {
+      // Student confirmed → complete the item
+      updatedState.item_resolution_pending = false;
+      updatedState.resolutions = { ...updatedState.resolutions, [currentItem]: true };
+      const allDone = updatedState.priority_queue.every((k) => updatedState.resolutions[k]);
+      updatedState.session_complete = allDone;
+      utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'closing');
+      return {
+        utterance,
+        updated_state: updatedState,
+        resolution_achieved: true,
+        tab_unlocked: !allDone,
+        session_complete: allDone,
+        classification: 'on_track',
+      };
+    } else {
+      // Student has more to discuss → clear pending, continue normal flow
+      updatedState.item_resolution_pending = false;
+      utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'normal');
+      return { utterance, updated_state: updatedState, resolution_achieved: false, tab_unlocked: false, session_complete: false, classification: 'on_track' };
+    }
+  }
+
+  // [코드] Classifier 호출
+  const classification = await runClassifier(studentMessage, currentItem, state, prompts, api);
 
   if (classification === 'on_track') {
     // [코드] Evaluator 호출
@@ -425,24 +470,22 @@ export async function processTurn(
 
     if (!resolved) updatedState.current_step += 1;
 
-    // [코드] Mediator 호출
-    utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, resolved ? 'resolution' : 'normal', evalResult);
-
     if (resolved) {
-      updatedState.resolutions = { ...updatedState.resolutions, [currentItem]: true };
-
-      const allDone = updatedState.priority_queue.every((k) => updatedState.resolutions[k]);
-      updatedState.session_complete = allDone;
-
+      // Conditions met → ask student if they want to move on (do NOT complete yet)
+      updatedState.item_resolution_pending = true;
+      utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'resolution', evalResult);
       return {
         utterance,
         updated_state: updatedState,
-        resolution_achieved: true,
-        tab_unlocked: !allDone,
-        session_complete: allDone,
+        resolution_achieved: false,
+        tab_unlocked: false,
+        session_complete: false,
         classification,
       };
     }
+
+    // [코드] Mediator 호출 (normal)
+    utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'normal', evalResult);
 
   } else if (classification === 'confusion') {
     // [코드] Reexplainer 호출
