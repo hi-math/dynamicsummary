@@ -24,15 +24,6 @@ const ITEM_PROMPTS = [
   { key: 'prompt_language_use',       label: 'language_use',       desc: '언어 형식' },
 ];
 
-const KNOWLEDGE = [
-  { key: 'knowledge_common',             label: '공통 개념',          desc: '6개 항목 공통 요약 원리' },
-  { key: 'knowledge_main_idea_coverage', label: 'main_idea_coverage', desc: '핵심 선별 개념 자료' },
-  { key: 'knowledge_condensation',       label: 'condensation',       desc: '정보 삭제·압축 개념 자료' },
-  { key: 'knowledge_content_accuracy',   label: 'content_accuracy',   desc: '원문 충실성 개념 자료' },
-  { key: 'knowledge_paraphrasing',       label: 'paraphrasing',       desc: '재진술 개념 자료' },
-  { key: 'knowledge_organization',       label: 'organization',       desc: 'paragraph 구조 개념 자료' },
-  { key: 'knowledge_language_use',       label: 'language_use',       desc: '언어 오류 개념 자료' },
-];
 
 function AssetSlot({ assetKey, label, desc, initialValue }: { assetKey: string; label: string; desc: string; initialValue: string }) {
   const { showToast } = useToast();
@@ -90,7 +81,7 @@ function AssetSlot({ assetKey, label, desc, initialValue }: { assetKey: string; 
   );
 }
 
-type SectionKey = 'system' | 'item' | 'knowledge' | 'legacy';
+type SectionKey = 'system' | 'item' | 'legacy';
 
 export default function PromptsTab({ initialPrompts, initialAssets }: { initialPrompts: Prompts | null; initialAssets: Record<string, string> }) {
   const { showToast } = useToast();
@@ -108,10 +99,9 @@ export default function PromptsTab({ initialPrompts, initialAssets }: { initialP
   }
 
   const SECTIONS: { key: SectionKey; label: string; count: number }[] = [
-    { key: 'system',    label: '시스템 프롬프트', count: 7 },
-    { key: 'item',      label: '항목별 프롬프트', count: 6 },
-    { key: 'knowledge', label: '지식 자료',       count: 7 },
-    { key: 'legacy',    label: '기본 설정',       count: 2 },
+    { key: 'system', label: '시스템 프롬프트', count: 7 },
+    { key: 'item',   label: '항목별 프롬프트', count: 6 },
+    { key: 'legacy', label: '기본 설정',       count: 2 },
   ];
 
   return (
@@ -134,11 +124,6 @@ export default function PromptsTab({ initialPrompts, initialAssets }: { initialP
       {section === 'item' && (
         <div className="space-y-3">
           {ITEM_PROMPTS.map((a) => <AssetSlot key={a.key} assetKey={a.key} label={a.label} desc={a.desc} initialValue={initialAssets[a.key] ?? ''} />)}
-        </div>
-      )}
-      {section === 'knowledge' && (
-        <div className="space-y-3">
-          {KNOWLEDGE.map((a) => <AssetSlot key={a.key} assetKey={a.key} label={a.label} desc={a.desc} initialValue={initialAssets[a.key] ?? ''} />)}
         </div>
       )}
       {section === 'legacy' && (

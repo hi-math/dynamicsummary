@@ -17,7 +17,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'users', label: '계정 관리' },
   { key: 'api', label: 'API 설정' },
   { key: 'prompts', label: '프롬프트' },
-  { key: 'passages', label: '지문 관리' },
+  { key: 'passages', label: '과제 관리' },
   { key: 'data', label: '데이터 조회' },
 ];
 
@@ -72,7 +72,7 @@ export default function AdminClient({
             {tab === 'users' && <UsersTab initialUsers={initialUsers} initialMentors={initialMentors} />}
             {tab === 'api' && <APITab initialAPI={initialAPI} />}
             {tab === 'prompts' && <PromptsTab initialPrompts={initialPrompts} initialAssets={initialPromptAssets} />}
-            {tab === 'passages' && <PassagesTab initialPassages={initialPassages} initialComprehensionQs={initialComprehensionQs as never} />}
+            {tab === 'passages' && <PassagesTab initialPassages={initialPassages} initialComprehensionQs={initialComprehensionQs as never} initialPromptAssets={initialPromptAssets} />}
             {tab === 'data' && <DataTab initialStudentsData={initialStudentsData as never} />}
           </main>
         </div>

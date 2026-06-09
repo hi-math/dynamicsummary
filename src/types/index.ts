@@ -99,7 +99,11 @@ export type DescriptorDiagnosis = {
 
 export type ItemDiagnosis = {
   detected_descriptors: DescriptorDiagnosis[];
-  affects_meaning?: boolean;  // language_use only
+  affects_meaning?: boolean;        // language_use only
+  score?: number;                   // 1–5 holistic score
+  score_rationale?: string;         // why this score was given
+  feedback_focus?: string;          // kept for LLM output compat
+  judgment_evidence?: string;       // kept for LLM output compat
 };
 
 export type AssessorOutput = {

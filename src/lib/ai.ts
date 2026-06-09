@@ -53,7 +53,7 @@ async function callAnthropic(
     },
     body: JSON.stringify({
       model: api.anthropic_model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: systemPrompt,
       messages,
     }),

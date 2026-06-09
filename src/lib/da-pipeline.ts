@@ -26,6 +26,7 @@ function buildDescriptorBlock(): string {
 // ─── Priority queue calculation ───────────────────────────────────────────────
 
 export function calculatePriorityQueue(assessorOutput: AssessorOutput): string[] {
+  if (!assessorOutput?.items) return [];
   const cfg = PRIORITY_CONFIG;
 
   const scores = Object.entries(assessorOutput.items).map(([key, item]) => {
@@ -90,16 +91,28 @@ export async function runAssessor(
 
   const sysPrompt = systemPrompt || `You are an Assessor in a Dynamic Assessment tutoring system for EFL summary writing.
 Diagnose the student's summary against the 6 evaluation areas and 19 descriptors listed below.
-For each descriptor that applies, record:
-- severity: "high" | "medium" | "low"
-- evidence: { problem_location, evidence_text, missing_content? }
-For language_use, also set affects_meaning: true if errors obscure meaning; false otherwise.
-Respond ONLY with valid JSON matching:
+
+CRITICAL: Your entire response must be a single JSON object whose FIRST and ONLY top-level key is "items".
+Do NOT place item keys at the top level. Always wrap them inside "items".
+
+For each item, include:
+- score: integer 1-5 (1=very poor, 5=excellent)
+- detected_descriptors: array of descriptors that apply (empty array [] if none)
+- score_rationale: 1-2 sentence explanation of why this score was given
+- feedback_focus: the exact sentence or phrase in the student text that is most problematic
+- judgment_evidence: specific evidence from the passage showing what the student missed or got wrong
+- affects_meaning: true/false (language_use item only)
+
+Respond ONLY with valid JSON:
 {
   "items": {
     "<item_key>": {
-      "detected_descriptors": [{ "key": "...", "severity": "...", "evidence": { "problem_location": "...", "evidence_text": "...", "missing_content": "..." } }],
-      "affects_meaning": true|false  // language_use only
+      "score": 3,
+      "detected_descriptors": [{ "key": "...", "severity": "high|medium|low", "evidence": { "problem_location": "...", "evidence_text": "...", "missing_content": "..." } }],
+      "score_rationale": "...",
+      "feedback_focus": "...",
+      "judgment_evidence": "...",
+      "affects_meaning": true
     }
   }
 }
@@ -111,8 +124,18 @@ ${descriptorBlock}`;
 
   const raw = await callLLMNode(sysPrompt, userInput, api);
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) throw new Error('Assessor returned non-JSON output');
-  return JSON.parse(json) as AssessorOutput;
+  if (!json) throw new Error(`Assessor returned non-JSON output: ${raw.slice(0, 200)}`);
+  const parsed = JSON.parse(json);
+  // Normalise: some models return items at top level instead of nested under "items"
+  if (!parsed?.items) {
+    const ITEM_KEYS = new Set(['main_idea_coverage','condensation','content_accuracy','paraphrasing','organization','language_use']);
+    const topKeys = Object.keys(parsed ?? {});
+    if (topKeys.some((k) => ITEM_KEYS.has(k))) {
+      return { items: parsed } as AssessorOutput;
+    }
+    throw new Error(`Assessor output missing "items" field. Got keys: ${topKeys.join(', ') || '(none)'}`);
+  }
+  return parsed as AssessorOutput;
 }
 
 // ─── Assessor Verifier ────────────────────────────────────────────────────────
@@ -324,7 +347,7 @@ async function runMediator(
   state: DASessionState,
   prompts: Record<string, string>,
   api: APISettings,
-  mode: 'normal' | 'resolution' | 'reexplain' | 'closing',
+  mode: 'normal' | 'resolution' | 'reexplain' | 'closing' | 'opening',
   evalResult?: { identification_success: boolean; remedial_verbalization_success: boolean },
   reexplainerGuidance?: string,
 ): Promise<string> {
@@ -338,6 +361,7 @@ async function runMediator(
   ].filter(Boolean).join('\n\n---\n\n');
 
   const sysPrompt = systemParts || `You are a DA tutor. Generate a natural, encouraging tutor utterance (1-3 sentences).
+- mode "opening": generate a warm, casual opening question that introduces the item topic lightly — like "이번에는 [item topic]에 대해 같이 살펴볼까요?" — do not sound clinical or evaluative.
 - mode "normal": continue scaffolding the student toward identifying/verbalizing the problem.
 - mode "resolution": celebrate resolution, ask if student has questions before moving on.
 - mode "reexplain": re-explain the problem from a different angle using the provided guidance.
@@ -349,6 +373,7 @@ Maintain a single, consistent tutor persona. Do NOT reveal internal node decisio
     current_step: state.current_step,
     mode,
     student_message: studentMessage,
+    assessor_evidence: state.assessor_output?.items[itemKey] ?? null,
     eval_result: evalResult ?? null,
     reexplainer_guidance: reexplainerGuidance ?? null,
     resolution_status: state.resolutions,
@@ -404,14 +429,17 @@ export async function processTurn(
     if (resolved) {
       updatedState.resolutions = { ...updatedState.resolutions, [currentItem]: true };
 
-      const isLastItem = updatedState.current_item_idx >= updatedState.priority_queue.length - 1;
+      const allDone = updatedState.priority_queue.every((k) => updatedState.resolutions[k]);
+      updatedState.session_complete = allDone;
 
-      if (isLastItem) {
-        updatedState.session_complete = true;
-        return { utterance, updated_state: updatedState, resolution_achieved: true, tab_unlocked: false, session_complete: true, classification };
-      }
-
-      return { utterance, updated_state: updatedState, resolution_achieved: true, tab_unlocked: true, session_complete: false, classification };
+      return {
+        utterance,
+        updated_state: updatedState,
+        resolution_achieved: true,
+        tab_unlocked: !allDone,
+        session_complete: allDone,
+        classification,
+      };
     }
 
   } else if (classification === 'confusion') {
@@ -426,6 +454,18 @@ export async function processTurn(
   }
 
   return { utterance, updated_state: updatedState, resolution_achieved: false, tab_unlocked: false, session_complete: false, classification };
+}
+
+// ─── Opening message (called immediately after session init) ─────────────────
+
+export async function generateOpeningMessage(
+  state: DASessionState,
+  prompts: Record<string, string>,
+  api: APISettings,
+): Promise<string> {
+  const currentItem = state.priority_queue[state.current_item_idx];
+  if (!currentItem) return '평가 세션을 시작합니다.';
+  return runMediator('[SESSION_OPENED]', currentItem, state, prompts, api, 'opening');
 }
 
 // ─── Tab advance (called when student clicks next tab) ────────────────────────

@@ -2,14 +2,14 @@
 
 import { useState } from 'react';
 import { useToast } from '@/components/ui/Toast';
-import { savePassage, saveComprehensionQuestions } from '@/actions/admin';
+import { savePassage, saveComprehensionQuestions, savePromptAsset } from '@/actions/admin';
 import type { Passage, ComprehensionQuestion } from '@/types';
 
 const CYCLE_KEYS = [
-  { key: 'cycle1', label: '사이클 1' },
-  { key: 'cycle2', label: '사이클 2' },
-  { key: 'cycle3', label: '사이클 3' },
-  { key: 'cycle4', label: '사이클 4' },
+  { key: 'cycle1', label: '과제 1' },
+  { key: 'cycle2', label: '과제 2' },
+  { key: 'cycle3', label: '과제 3' },
+  { key: 'cycle4', label: '과제 4' },
 ];
 
 // ─── Passage card ─────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ function PassageCard({ cycleKey, label, initial }: { cycleKey: string; label: st
     setTitle(draft.title);
     setContent(draft.content);
     setEditing(false);
-    showToast(`${label} 지문이 저장되었습니다.`, 'success');
+    showToast(`${label} 지시문이 저장되었습니다.`, 'success');
   }
 
   return (
@@ -74,6 +74,64 @@ function PassageCard({ cycleKey, label, initial }: { cycleKey: string; label: st
             {title ? <p className="text-sm font-medium text-slate-800">{title}</p> : <p className="text-sm text-slate-300 italic">제목 없음</p>}
             {content ? <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap line-clamp-4">{content}</p> : <p className="text-sm text-slate-300 italic">내용 없음</p>}
           </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Knowledge prompt card ─────────────────────────────────────────────────────
+
+function KnowledgePromptCard({ cycleKey, label, initialValue }: { cycleKey: string; label: string; initialValue: string }) {
+  const { showToast } = useToast();
+  const assetKey = `knowledge_${cycleKey}`;
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [value, setValue] = useState(initialValue);
+  const [draft, setDraft] = useState(initialValue);
+
+  async function handleSave() {
+    setSaving(true);
+    const res = await savePromptAsset(assetKey, draft);
+    setSaving(false);
+    if (res?.error) { showToast(res.error, 'error'); return; }
+    setValue(draft);
+    setEditing(false);
+    showToast(`${label} 지식자료 프롬프트가 저장되었습니다.`, 'success');
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <div className="flex items-center px-5 py-3 border-b border-slate-100 bg-slate-50 gap-2">
+        <h3 className="text-sm font-semibold text-slate-700">{label} — 지식자료 프롬프트</h3>
+        <span className="text-xs text-slate-400 font-mono">{assetKey}</span>
+        {editing ? (
+          <>
+            <button onClick={handleSave} disabled={saving}
+              className="ml-auto text-xs px-2.5 py-0.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-md transition-colors">
+              {saving ? '저장 중...' : '저장'}
+            </button>
+            <button onClick={() => { setDraft(value); setEditing(false); }}
+              className="text-xs px-2.5 py-0.5 border border-slate-300 rounded-md hover:bg-slate-100 text-slate-500 transition-colors">
+              취소
+            </button>
+          </>
+        ) : (
+          <button onClick={() => { setDraft(value); setEditing(true); }}
+            className="ml-auto text-xs px-2.5 py-0.5 border border-slate-300 rounded-md hover:bg-slate-100 text-slate-500 transition-colors">
+            수정
+          </button>
+        )}
+      </div>
+      <div className="p-5">
+        {editing ? (
+          <textarea rows={6} value={draft} onChange={(e) => setDraft(e.target.value)}
+            placeholder="이 과제에서 사용할 지식자료 프롬프트를 입력하세요..."
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-y leading-relaxed" />
+        ) : value ? (
+          <pre className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed line-clamp-4 font-mono">{value}</pre>
+        ) : (
+          <p className="text-sm text-slate-300 italic">지식자료 프롬프트가 입력되지 않았습니다.</p>
         )}
       </div>
     </div>
@@ -177,24 +235,45 @@ function ComprehensionCard({ cycleKey, label, initial }: { cycleKey: string; lab
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-export default function PassagesTab({ initialPassages, initialComprehensionQs }: {
+export default function PassagesTab({
+  initialPassages,
+  initialComprehensionQs,
+  initialPromptAssets,
+}: {
   initialPassages: Passage[];
   initialComprehensionQs: { cycle_key: string; questions: ComprehensionQuestion[] }[];
+  initialPromptAssets: Record<string, string>;
 }) {
+  const [activeKey, setActiveKey] = useState('cycle1');
   const passageMap = Object.fromEntries(initialPassages.map((p) => [p.cycle_key, p]));
   const comprehensionMap = Object.fromEntries(initialComprehensionQs.map((c) => [c.cycle_key, c.questions ?? []]));
 
   return (
     <div>
-      <h2 className="text-lg font-semibold text-slate-800 mb-4">지문 관리</h2>
-      <div className="space-y-6">
+      <h2 className="text-lg font-semibold text-slate-800 mb-4">과제 관리</h2>
+
+      {/* Cycle tab bar */}
+      <div className="flex gap-1 mb-5 bg-slate-100 rounded-xl p-1 w-fit">
         {CYCLE_KEYS.map(({ key, label }) => (
-          <div key={key} className="space-y-3">
-            <PassageCard cycleKey={key} label={label} initial={passageMap[key]} />
-            <ComprehensionCard cycleKey={key} label={label} initial={comprehensionMap[key] ?? []} />
-          </div>
+          <button key={key} onClick={() => setActiveKey(key)}
+            className={`px-5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              activeKey === key ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}>
+            {label}
+          </button>
         ))}
       </div>
+
+      {/* Active cycle content */}
+      {CYCLE_KEYS.map(({ key, label }) =>
+        activeKey === key ? (
+          <div key={key} className="space-y-4">
+            <PassageCard cycleKey={key} label={label} initial={passageMap[key]} />
+            <KnowledgePromptCard cycleKey={key} label={label} initialValue={initialPromptAssets[`knowledge_${key}`] ?? ''} />
+            <ComprehensionCard cycleKey={key} label={label} initial={comprehensionMap[key] ?? []} />
+          </div>
+        ) : null
+      )}
     </div>
   );
 }
