@@ -2,12 +2,12 @@
 
 import { useState } from 'react';
 import { useToast } from '@/components/ui/Toast';
+import Modal from '@/components/ui/Modal';
 import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import SummaryPanel from '@/components/panels/SummaryPanel';
 import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
 import { submitDraft, saveNotes, saveSummary, studentAdvancePhase } from '@/actions/student';
-import { getSubmitLabel } from '@/lib/phases';
 import type { SessionCookie, SessionData } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
@@ -26,17 +26,8 @@ export default function DraftPhase({
   const { showToast } = useToast();
   const [submitted, setSubmitted] = useState(!!sessionData?.submitted_at);
   const [submitting, setSubmitting] = useState(false);
-  const [advancing, setAdvancing] = useState(false);
-
-  async function handleSubmit(summary: string) {
-    if (!summary.trim()) { showToast('요약문을 입력해주세요.', 'error'); return; }
-    setSubmitting(true);
-    const res = await submitDraft(session.id, phase, summary);
-    setSubmitting(false);
-    if (res?.error) { showToast(res.error, 'error'); return; }
-    setSubmitted(true);
-    showToast('요약문이 제출되었습니다.', 'success');
-  }
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [summaryValue, setSummaryValue] = useState(sessionData?.summary ?? '');
 
   async function handleSummaryBlur(value: string) {
     await saveSummary(session.id, phase, value);
@@ -46,11 +37,15 @@ export default function DraftPhase({
     await saveNotes(session.id, phase, value);
   }
 
-  async function handleAdvance() {
-    setAdvancing(true);
-    const res = await studentAdvancePhase(session.id);
-    setAdvancing(false);
-    if (res?.error) showToast(res.error, 'error');
+  async function handleConfirmSubmit() {
+    if (!summaryValue.trim()) { showToast('요약문을 입력해주세요.', 'error'); setShowConfirmModal(false); return; }
+    setSubmitting(true);
+    const res = await submitDraft(session.id, phase, summaryValue);
+    if (res?.error) { showToast(res.error, 'error'); setSubmitting(false); setShowConfirmModal(false); return; }
+    setSubmitted(true);
+    await studentAdvancePhase(session.id);
+    setSubmitting(false);
+    setShowConfirmModal(false);
   }
 
   return (
@@ -64,9 +59,10 @@ export default function DraftPhase({
           <SummaryPanel
             initialValue={sessionData?.summary ?? ''}
             onBlur={handleSummaryBlur}
-            onSubmit={handleSubmit}
+            onValueChange={setSummaryValue}
             submitted={submitted}
-            submitting={submitting}
+            submitting={false}
+            hideSubmit={true}
           />
         </div>
       </div>
@@ -84,16 +80,50 @@ export default function DraftPhase({
         </div>
       </div>
 
-      {/* Phase advance bar */}
+      {/* Submit bar */}
       <div className="shrink-0 flex justify-end pt-1">
         <button
-          onClick={handleAdvance}
-          disabled={advancing || !submitted}
+          onClick={() => setShowConfirmModal(true)}
+          disabled={submitted || !summaryValue.trim()}
           className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
         >
-          {advancing ? '처리 중...' : getSubmitLabel(phase)}
+          {submitted ? '제출 완료' : '제출'}
         </button>
       </div>
+
+      {/* Confirmation modal */}
+      <Modal
+        open={showConfirmModal}
+        onClose={() => !submitting && setShowConfirmModal(false)}
+        title="요약문 제출"
+      >
+        <p className="text-sm text-slate-600 mb-6">
+          요약문을 제출하시겠습니까?<br />
+          <span className="text-slate-400 text-xs">제출 후에는 수정할 수 없습니다.</span>
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => setShowConfirmModal(false)}
+            disabled={submitting}
+            className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800 disabled:opacity-40 transition-colors"
+          >
+            취소
+          </button>
+          <button
+            onClick={handleConfirmSubmit}
+            disabled={submitting}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+          >
+            {submitting && (
+              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            )}
+            {submitting ? '처리 중...' : '제출'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }
