@@ -204,6 +204,27 @@ export async function startDASession(
   }
 }
 
+// Pre-generates DA session state during comprehension phase so tabs are instant on DA entry.
+// Idempotent: skips if state already exists.
+export async function preGenerateDASession(
+  studentId: string,
+  daPhase: string,
+  summary: string,
+  passageContent: string,
+): Promise<{ success: boolean; error?: string }> {
+  if (!summary.trim() || !passageContent.trim()) return { success: false, error: '지문 또는 요약문 없음' };
+  const supabase = createServerClient();
+  const { data: existing } = await supabase
+    .from('da_session_state')
+    .select('student_id')
+    .eq('student_id', studentId)
+    .eq('phase', daPhase)
+    .single();
+  if (existing) return { success: true }; // already generated
+  const result = await startDASession(studentId, daPhase, summary, passageContent);
+  return result.error ? { success: false, error: result.error } : { success: true };
+}
+
 // Processes one student turn through Classifier → route → Mediator
 // itemIdx: which tab the student is currently on (overrides DB current_item_idx for free navigation)
 // itemState: per-item cumulative state managed client-side

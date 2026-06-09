@@ -1,6 +1,6 @@
 export default function ReferenceToolsPanel() {
   const tools = [
-    { label: 'Naver Dictionary', url: 'https://dict.naver.com/', icon: 'N' },
+    { label: 'Naver Dictionary', url: 'https://en.dict.naver.com/#/main', icon: 'N' },
     { label: 'SKELL', url: 'https://skell.sketchengine.eu/', icon: 'S' },
   ];
 

@@ -84,10 +84,10 @@ export default function DraftPhase({
       <div className="shrink-0 flex justify-end pt-1">
         <button
           onClick={() => setShowConfirmModal(true)}
-          disabled={submitted || !summaryValue.trim()}
+          disabled={!summaryValue.trim()}
           className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
         >
-          {submitted ? '제출 완료' : '제출'}
+          제출
         </button>
       </div>
 

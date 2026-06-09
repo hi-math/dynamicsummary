@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/components/ui/Toast';
 import Modal from '@/components/ui/Modal';
-import { submitComprehensionAnswers, studentAdvancePhase } from '@/actions/student';
+import { submitComprehensionAnswers, studentAdvancePhase, preGenerateDASession } from '@/actions/student';
 import type { SessionCookie, ComprehensionQuestion } from '@/types';
 
 const TIME_LIMIT_SEC = 180; // 3 minutes
@@ -13,11 +13,15 @@ export default function ComprehensionPhase({
   phase,
   questions,
   alreadySubmitted,
+  draftSummary,
+  passageContent,
 }: {
   session: SessionCookie;
   phase: string;
   questions: ComprehensionQuestion[];
   alreadySubmitted: boolean;
+  draftSummary?: string;
+  passageContent?: string;
 }) {
   const { showToast } = useToast();
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -41,12 +45,21 @@ export default function ComprehensionPhase({
   }, [submitted]);
 
   useEffect(() => {
-    if (timeLeft === 0 && !submitted) handleSubmitAndAdvance(true);
+    if (timeLeft === 0) handleSubmitAndAdvance(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeLeft]);
 
+  // Pre-generate DA session in background while student answers comprehension questions
+  useEffect(() => {
+    if (session.team !== 'chatbot') return;
+    if (!draftSummary?.trim() || !passageContent?.trim()) return;
+    const daPhase = phase.replace('_comprehension', '_da');
+    preGenerateDASession(session.id, daPhase, draftSummary, passageContent);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function handleSubmitAndAdvance(byTimer = false) {
-    if (submitting || submitted) return;
+    if (submitting) return;
     setSubmitting(true);
     setShowConfirmModal(false);
     if (timerRef.current) clearInterval(timerRef.current);

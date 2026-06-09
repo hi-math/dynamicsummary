@@ -20,6 +20,7 @@ export default function StudentRouter({
   comprehensionQuestions,
   comprehensionSubmitted,
   daSessionState,
+  draftSummary,
 }: {
   session: SessionCookie;
   phase: string;
@@ -30,6 +31,7 @@ export default function StudentRouter({
   comprehensionQuestions: ComprehensionQuestion[];
   comprehensionSubmitted: boolean;
   daSessionState: DASessionState | null;
+  draftSummary?: string;
 }) {
   return (
     <ToastProvider>
@@ -47,6 +49,8 @@ export default function StudentRouter({
           phase={phase}
           questions={comprehensionQuestions}
           alreadySubmitted={comprehensionSubmitted}
+          draftSummary={draftSummary}
+          passageContent={passage.content}
         />
       )}
       {isDAPhase(phase) && (
@@ -58,6 +62,7 @@ export default function StudentRouter({
           aiMessages={aiMessages}
           humanMessages={humanMessages}
           initialDAState={daSessionState}
+          draftSummary={draftSummary}
         />
       )}
       {isRevisionPhase(phase) && (

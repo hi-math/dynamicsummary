@@ -19,11 +19,18 @@ export default async function StudentPage() {
   const phase = user.current_phase as string;
   const cycleKey = cycleKeyFromPhase(phase);
 
-  const [sessionData, passage, aiMessages, humanMessages] = await Promise.all([
+  const draftPhase = phase.endsWith('_da')
+    ? phase.replace('_da', '_draft')
+    : phase.endsWith('_comprehension')
+    ? phase.replace('_comprehension', '_draft')
+    : null;
+
+  const [sessionData, passage, aiMessages, humanMessages, draftSessionData] = await Promise.all([
     getSessionData(session.id, phase),
     getPassage(cycleKey),
     getAIMessages(session.id, phase),
     getHumanMessages(session.id),
+    draftPhase ? getSessionData(session.id, draftPhase) : Promise.resolve(null),
   ]);
 
   // Comprehension questions (only needed on comprehension phase)
@@ -62,6 +69,7 @@ export default async function StudentPage() {
           comprehensionQuestions={comprehensionQuestions}
           comprehensionSubmitted={comprehensionSubmitted}
           daSessionState={daSessionState}
+          draftSummary={draftSessionData?.summary ?? undefined}
         />
       </div>
     </div>

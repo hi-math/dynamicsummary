@@ -29,6 +29,7 @@ export default function DASession({
   aiMessages,
   humanMessages,
   initialDAState,
+  draftSummary,
 }: {
   session: SessionCookie;
   phase: string;
@@ -37,6 +38,7 @@ export default function DASession({
   aiMessages: AIMessage[];
   humanMessages: HumanMessage[];
   initialDAState?: DASessionState | null;
+  draftSummary?: string;
 }) {
   const { showToast } = useToast();
   const isChatbot = session.team === 'chatbot';
@@ -45,7 +47,9 @@ export default function DASession({
   const [submitting, setSubmitting] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [daState, setDaState] = useState<DASessionState | null>(initialDAState ?? null);
-  const [currentSummary, setCurrentSummary] = useState(sessionData?.summary ?? '');
+  // draftSummary: the draft text used for Assessor judgment; falls back to saved DA summary
+  const initialSummary = draftSummary ?? sessionData?.summary ?? '';
+  const [currentSummary, setCurrentSummary] = useState(initialSummary);
 
   // Per-item chat messages (chatbot only)
   const [messagesPerItem, setMessagesPerItem] = useState<Record<string, LocalMsg[]>>(() => {
@@ -112,10 +116,11 @@ export default function DASession({
 
   // Auto-init DA when page reloaded with submitted but no in-memory DA state
   useEffect(() => {
-    if (!isChatbot || !submitted || daState || daInitRef.current || !currentSummary) return;
+    const assessmentSummary = draftSummary || currentSummary;
+    if (!isChatbot || !submitted || daState || daInitRef.current || !assessmentSummary) return;
     daInitRef.current = true;
     setChatLoading(true);
-    startDASession(session.id, phase, currentSummary, passage.content).then((res) => {
+    startDASession(session.id, phase, assessmentSummary, passage.content).then((res) => {
       setChatLoading(false);
       if (res.error) { setChatError(res.error); return; }
       setDaState(res.state);
@@ -145,17 +150,24 @@ export default function DASession({
     if (res?.error) { showToast(res.error, 'error'); setSubmitting(false); return; }
 
     if (isChatbot) {
-      setChatLoading(true);
-      const daRes = await startDASession(session.id, phase, summary, passage.content);
-      setChatLoading(false);
-      if (daRes.error) { showToast(daRes.error, 'error'); setSubmitting(false); return; }
-      setDaState(daRes.state);
-      setActiveTabIdx(0);
-      if (daRes.openingUtterance && daRes.state.priority_queue[0]) {
-        const key = daRes.state.priority_queue[0];
-        setMessagesPerItem({ [key]: [{ role: 'assistant', content: daRes.openingUtterance, id: String(Date.now()) }] });
+      if (daState) {
+        // Pre-generated during comprehension phase — use existing state instantly
+        daInitRef.current = true;
+      } else {
+        // Run Assessor now (comprehension phase was skipped or team changed)
+        const assessmentSummary = draftSummary || summary;
+        setChatLoading(true);
+        const daRes = await startDASession(session.id, phase, assessmentSummary, passage.content);
+        setChatLoading(false);
+        if (daRes.error) { showToast(daRes.error, 'error'); setSubmitting(false); return; }
+        setDaState(daRes.state);
+        setActiveTabIdx(0);
+        if (daRes.openingUtterance && daRes.state.priority_queue[0]) {
+          const key = daRes.state.priority_queue[0];
+          setMessagesPerItem({ [key]: [{ role: 'assistant', content: daRes.openingUtterance, id: String(Date.now()) }] });
+        }
+        daInitRef.current = true;
       }
-      daInitRef.current = true;
     } else {
       showToast('요약문이 제출되었습니다. 멘토의 피드백을 기다려주세요.', 'success');
     }
@@ -477,7 +489,7 @@ export default function DASession({
             </div>
             <div className="flex-1 min-h-0">
               <SummaryPanel
-                initialValue={sessionData?.summary ?? ''}
+                initialValue={initialSummary}
                 onBlur={handleSummaryBlur}
                 onValueChange={setCurrentSummary}
                 onSubmit={handleSubmit}
