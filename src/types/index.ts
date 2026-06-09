@@ -116,6 +116,7 @@ export type DASessionState = {
   current_step: number;
   item_identification_cumulative: boolean;
   item_verbalization_cumulative: boolean;
+  item_resolution_pending: boolean;   // true when conditions met, waiting for student confirmation
   resolutions: Record<string, boolean>;
   session_complete: boolean;
   diagnosis_confidence: DiagnosisConfidence | null;

@@ -63,6 +63,7 @@ export function createInitialState(): DASessionState {
     current_step: 1,
     item_identification_cumulative: false,
     item_verbalization_cumulative: false,
+    item_resolution_pending: false,
     resolutions: {},
     session_complete: false,
     diagnosis_confidence: null,
@@ -76,6 +77,7 @@ export function resetItemState(state: DASessionState): DASessionState {
     current_step: 1,
     item_identification_cumulative: false,
     item_verbalization_cumulative: false,
+    item_resolution_pending: false,
   };
 }
 
