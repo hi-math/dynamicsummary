@@ -6,7 +6,6 @@ import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import SummaryPanel from '@/components/panels/SummaryPanel';
 import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
-import ChatPanel from '@/components/panels/ChatPanel';
 import {
   submitDraft, saveNotes, saveSummary, studentAdvancePhase,
   startDASession, sendDAMessage, advanceDATab,

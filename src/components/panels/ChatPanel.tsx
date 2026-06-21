@@ -12,6 +12,7 @@ export default function ChatPanel({
   submitted,
   collapsed,
   onToggleCollapse,
+  cycleKey = 'cycle1',
 }: {
   session: SessionCookie;
   // kept for signature compatibility but unused for chatbot
@@ -24,6 +25,7 @@ export default function ChatPanel({
   onAdvance?: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  cycleKey?: string;
   // unused DA props kept for compat
   phase?: string;
   passageContent?: string;
@@ -42,19 +44,19 @@ export default function ChatPanel({
 
   useEffect(() => {
     pollRef.current = setInterval(async () => {
-      const fresh = await getHumanMessages(session.id);
+      const fresh = await getHumanMessages(session.id, cycleKey);
       setMessages(fresh.map((m) => ({ source: 'human' as const, sender_id: m.sender_id, content: m.content, id: m.id, created_at: m.created_at })));
     }, 1800);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [session.id]);
+  }, [session.id, cycleKey]);
 
   async function handleSend() {
     const text = input.trim();
     if (!text || loading) return;
     setInput('');
     setLoading(true);
-    await sendHumanMessage(session.id, session.id, text);
-    const fresh = await getHumanMessages(session.id);
+    await sendHumanMessage(session.id, session.id, text, cycleKey);
+    const fresh = await getHumanMessages(session.id, cycleKey);
     setMessages(fresh.map((m) => ({ source: 'human' as const, sender_id: m.sender_id, content: m.content, id: m.id, created_at: m.created_at })));
     setLoading(false);
   }
