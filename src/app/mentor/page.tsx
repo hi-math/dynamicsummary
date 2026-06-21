@@ -15,8 +15,11 @@ export default async function MentorPage() {
     <ToastProvider>
       <div className="flex flex-col h-screen bg-slate-50">
         <Navbar session={session} />
-        <MentorClient session={session} initialStudents={students} />
+        <div className="flex flex-1 overflow-hidden pb-[2%]">
+          <MentorClient session={session} initialStudents={students} />
+        </div>
       </div>
+
     </ToastProvider>
   );
 }

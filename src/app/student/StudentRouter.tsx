@@ -21,6 +21,8 @@ export default function StudentRouter({
   comprehensionSubmitted,
   daSessionState,
   draftSummary,
+  mentorId,
+  mentorName,
 }: {
   session: SessionCookie;
   phase: string;
@@ -32,6 +34,8 @@ export default function StudentRouter({
   comprehensionSubmitted: boolean;
   daSessionState: DASessionState | null;
   draftSummary?: string;
+  mentorId?: string;
+  mentorName?: string;
 }) {
   return (
     <ToastProvider>
@@ -63,6 +67,8 @@ export default function StudentRouter({
           humanMessages={humanMessages}
           initialDAState={daSessionState}
           draftSummary={draftSummary}
+          mentorId={mentorId}
+          mentorName={mentorName}
         />
       )}
       {isRevisionPhase(phase) && (

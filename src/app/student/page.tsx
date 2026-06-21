@@ -4,7 +4,7 @@ import {
   getSessionData, getAIMessages, getPassage, getCurrentUser,
   getComprehensionQuestions, getDASessionState,
 } from '@/actions/student';
-import { getHumanMessages } from '@/actions/mentor';
+import { getHumanMessages, getMentorById } from '@/actions/mentor';
 import { cycleKeyFromPhase, isComprehensionPhase } from '@/lib/phases';
 import Navbar from '@/components/Navbar';
 import StudentRouter from './StudentRouter';
@@ -29,7 +29,7 @@ export default async function StudentPage() {
     getSessionData(session.id, phase),
     getPassage(cycleKey),
     getAIMessages(session.id, phase),
-    getHumanMessages(session.id),
+    getHumanMessages(session.id, cycleKey),
     draftPhase ? getSessionData(session.id, draftPhase) : Promise.resolve(null),
   ]);
 
@@ -53,6 +53,11 @@ export default async function StudentPage() {
     ? await getDASessionState(session.id, phase)
     : null;
 
+  // For human team students in DA phase: fetch mentor info
+  const mentorInfo = (user.team === 'human' && phase.endsWith('_da') && user.mentor_id)
+    ? await getMentorById(user.mentor_id)
+    : null;
+
   const liveSession = { ...session, team: user.team };
 
   return (
@@ -70,6 +75,8 @@ export default async function StudentPage() {
           comprehensionSubmitted={comprehensionSubmitted}
           daSessionState={daSessionState}
           draftSummary={draftSessionData?.summary ?? undefined}
+          mentorId={mentorInfo?.id ?? undefined}
+          mentorName={mentorInfo?.name ?? undefined}
         />
       </div>
     </div>

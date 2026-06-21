@@ -11,8 +11,8 @@ import {
   submitDraft, saveNotes, saveSummary, studentAdvancePhase,
   startDASession, sendDAMessage, advanceDATab,
 } from '@/actions/student';
-import { sendHumanMessage, getHumanMessages } from '@/actions/mentor';
-import { getSubmitLabel } from '@/lib/phases';
+import { sendHumanMessage, getHumanMessages, updatePresence, getPresence } from '@/actions/mentor';
+import { getSubmitLabel, cycleKeyFromPhase } from '@/lib/phases';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
@@ -30,6 +30,8 @@ export default function DASession({
   humanMessages,
   initialDAState,
   draftSummary,
+  mentorId,
+  mentorName,
 }: {
   session: SessionCookie;
   phase: string;
@@ -39,6 +41,8 @@ export default function DASession({
   humanMessages: HumanMessage[];
   initialDAState?: DASessionState | null;
   draftSummary?: string;
+  mentorId?: string;
+  mentorName?: string;
 }) {
   const { showToast } = useToast();
   const isChatbot = session.team === 'chatbot';
@@ -94,6 +98,7 @@ export default function DASession({
 
   // Human messages state (human team)
   const [humanMsgs, setHumanMsgs] = useState(humanMessages);
+  const [mentorOnline, setMentorOnline] = useState(false);
 
   const tabs = daState?.priority_queue ?? [];
   const allResolved = tabs.length > 0 && tabs.every((k) => daState?.resolutions[k]);
@@ -105,7 +110,8 @@ export default function DASession({
     if (activeItemKey) {
       bottomRefs.current[activeItemKey]?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messagesPerItem, activeItemKey]);
+    bottomRefs.current['human']?.scrollIntoView({ behavior: 'smooth' });
+  }, [messagesPerItem, activeItemKey, humanMsgs]);
 
   // Focus input after AI response arrives (runs after DOM update, so input is no longer disabled)
   useEffect(() => {
@@ -134,14 +140,36 @@ export default function DASession({
   }, [submitted]);
 
   // Human team polling
+  const cycleKey = cycleKeyFromPhase(phase);
   useEffect(() => {
     if (isChatbot) return;
     pollRef.current = setInterval(async () => {
-      const fresh = await getHumanMessages(session.id);
+      const fresh = await getHumanMessages(session.id, cycleKey);
       setHumanMsgs(fresh);
     }, 1800);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [session.id, isChatbot]);
+
+  // Own heartbeat — update our presence every 15s
+  useEffect(() => {
+    if (isChatbot) return;
+    updatePresence(session.id);
+    const interval = setInterval(() => updatePresence(session.id), 15000);
+    return () => clearInterval(interval);
+  }, [session.id, isChatbot]);
+
+  // Poll mentor presence every 5s
+  useEffect(() => {
+    if (isChatbot || !mentorId) return;
+    async function checkMentor() {
+      if (!mentorId) return;
+      const lastSeen = await getPresence(mentorId);
+      setMentorOnline(!!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 30000);
+    }
+    checkMentor();
+    const interval = setInterval(checkMentor, 5000);
+    return () => clearInterval(interval);
+  }, [isChatbot, mentorId]);
 
   async function handleSubmit(summary: string) {
     if (!summary.trim()) { showToast('요약문을 입력해주세요.', 'error'); return; }
@@ -257,8 +285,8 @@ export default function DASession({
     if (!text || chatLoading) return;
     setInput('');
     setChatLoading(true);
-    await sendHumanMessage(session.id, session.id, text);
-    const fresh = await getHumanMessages(session.id);
+    await sendHumanMessage(session.id, session.id, text, cycleKey);
+    const fresh = await getHumanMessages(session.id, cycleKey);
     setHumanMsgs(fresh);
     setChatLoading(false);
   }
@@ -418,30 +446,54 @@ export default function DASession({
   }
 
   function renderHumanPanel() {
+    const mentorLabel = mentorName ?? '멘토';
+    const chatEnabled = mentorOnline;
+
     return (
       <div className="h-full flex flex-col bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between">
-          <span className="text-sm font-semibold text-slate-700">멘토 채팅</span>
-          <span className={`flex items-center gap-1 text-xs ${submitted ? 'text-emerald-600' : 'text-slate-400'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${submitted ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-            {submitted ? '연결됨' : '대기 중'}
-          </span>
+        {/* Header with presence */}
+        <div className="px-3 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-sm font-semibold text-slate-700">{mentorLabel}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1.5 text-xs text-emerald-600">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              나 (접속 중)
+            </span>
+            <span className={`flex items-center gap-1.5 text-xs ${mentorOnline ? 'text-emerald-600' : 'text-slate-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${mentorOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
+              {mentorLabel} {mentorOnline ? '(접속 중)' : '(오프라인)'}
+            </span>
+          </div>
         </div>
+
+        {/* Offline notice */}
+        {!chatEnabled && (
+          <div className="px-3 py-2 bg-amber-50 border-b border-amber-100 shrink-0">
+            <p className="text-xs text-amber-700">멘토가 접속하면 채팅이 활성화됩니다.</p>
+          </div>
+        )}
+
+        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-3">
           {humanMsgs.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs text-center gap-2">
+            <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs text-center gap-2 px-4">
               <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
-              멘토의 메시지를 기다리고 있습니다.
+              {chatEnabled ? '대화를 시작해보세요.' : '멘토의 접속을 기다리고 있습니다.'}
             </div>
           )}
           {humanMsgs.map((msg) => {
             const isMe = msg.sender_id === session.id;
             return (
               <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} mb-2`}>
-                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'}`}>
-                  {!isMe && <p className="text-xs font-medium text-slate-500 mb-0.5">{msg.sender_id}</p>}
+                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${
+                  isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
+                }`}>
+                  {!isMe && <p className="text-xs font-medium text-slate-500 mb-0.5">{mentorLabel}</p>}
                   {msg.content}
                 </div>
               </div>
@@ -452,20 +504,23 @@ export default function DASession({
               <div className="bg-slate-100 px-3 py-2 rounded-lg text-sm text-slate-400">전송 중...</div>
             </div>
           )}
+          <div ref={(el) => { if (el) bottomRefs.current['human'] = el; }} />
         </div>
+
+        {/* Input */}
         <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleHumanSend(); } }}
-            placeholder="메시지를 입력하세요..."
-            disabled={chatLoading}
-            className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50"
+            placeholder={chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
+            disabled={!chatEnabled || chatLoading}
+            className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
           />
           <button
             onClick={handleHumanSend}
-            disabled={chatLoading || !input.trim()}
+            disabled={!chatEnabled || chatLoading || !input.trim()}
             className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
