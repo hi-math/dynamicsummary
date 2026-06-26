@@ -38,6 +38,7 @@ export default function ChatPanel({
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -59,6 +60,7 @@ export default function ChatPanel({
     const fresh = await getHumanMessages(session.id, cycleKey);
     setMessages(fresh.map((m) => ({ source: 'human' as const, sender_id: m.sender_id, content: m.content, id: m.id, created_at: m.created_at })));
     setLoading(false);
+    requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   if (collapsed) {
@@ -121,6 +123,7 @@ export default function ChatPanel({
 
       <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
         <input
+          ref={inputRef}
           type="text" value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}

@@ -7,6 +7,19 @@
 // --
 // -- ALTER TABLE human_messages ADD COLUMN IF NOT EXISTS cycle_key text NOT NULL DEFAULT 'cycle1';
 // -- CREATE INDEX IF NOT EXISTS human_messages_cycle_idx ON human_messages (student_id, cycle_key);
+// --
+// -- create table if not exists mentor_notes (
+// --   mentor_id text not null,
+// --   student_id text not null,
+// --   cycle_key text not null,
+// --   content text not null default '',
+// --   updated_at timestamptz not null default now(),
+// --   primary key (mentor_id, student_id, cycle_key)
+// -- );
+// -- alter table mentor_notes enable row level security;
+// -- create policy "mentor_notes_all" on mentor_notes for all using (true) with check (true);
+// --
+// -- ALTER TABLE session_data ADD COLUMN IF NOT EXISTS learning_completed boolean NOT NULL DEFAULT false;
 
 import { createServerClient } from '@/lib/supabase-server';
 import type { HumanMessage, User } from '@/types';
@@ -93,4 +106,62 @@ export async function getCyclePassage(cycleKey: string): Promise<{ title: string
   const supabase = createServerClient();
   const { data } = await supabase.from('passages').select('title, content').eq('cycle_key', cycleKey).single();
   return data;
+}
+
+// ─── Learning completion (mentor approves student's progression) ───────────────
+
+export async function getLearningComplete(studentId: string, phase: string): Promise<boolean> {
+  const supabase = createServerClient();
+  const { data } = await supabase
+    .from('session_data')
+    .select('learning_completed')
+    .eq('student_id', studentId)
+    .eq('phase', phase)
+    .single();
+  return !!data?.learning_completed;
+}
+
+export async function setLearningComplete(
+  studentId: string,
+  phase: string,
+  completed: boolean,
+): Promise<{ error?: string }> {
+  const supabase = createServerClient();
+  const { error } = await supabase.from('session_data').upsert(
+    { student_id: studentId, phase, learning_completed: completed, updated_at: new Date().toISOString() },
+    { onConflict: 'student_id,phase' },
+  );
+  if (error) return { error: error.message };
+  return {};
+}
+
+export async function getMentorNote(
+  mentorId: string,
+  studentId: string,
+  cycleKey: string,
+): Promise<string> {
+  const supabase = createServerClient();
+  const { data } = await supabase
+    .from('mentor_notes')
+    .select('content')
+    .eq('mentor_id', mentorId)
+    .eq('student_id', studentId)
+    .eq('cycle_key', cycleKey)
+    .single();
+  return data?.content ?? '';
+}
+
+export async function saveMentorNote(
+  mentorId: string,
+  studentId: string,
+  cycleKey: string,
+  content: string,
+): Promise<{ error?: string }> {
+  const supabase = createServerClient();
+  const { error } = await supabase.from('mentor_notes').upsert(
+    { mentor_id: mentorId, student_id: studentId, cycle_key: cycleKey, content, updated_at: new Date().toISOString() },
+    { onConflict: 'mentor_id,student_id,cycle_key' }
+  );
+  if (error) return { error: error.message };
+  return {};
 }

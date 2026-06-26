@@ -1,10 +1,9 @@
 'use client';
 
-import { isDraftPhase, isComprehensionPhase, isDAPhase, isRevisionPhase } from '@/lib/phases';
+import { isDraftPhase, isComprehensionPhase, isDAPhase } from '@/lib/phases';
 import DraftPhase from './DraftPhase';
 import ComprehensionPhase from './ComprehensionPhase';
 import DASession from './DASession';
-import RevisionPhase from './RevisionPhase';
 import { ToastProvider } from '@/components/ui/Toast';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, ComprehensionQuestion, DASessionState } from '@/types';
 
@@ -54,7 +53,7 @@ export default function StudentRouter({
           questions={comprehensionQuestions}
           alreadySubmitted={comprehensionSubmitted}
           draftSummary={draftSummary}
-          passageContent={passage.content}
+          passage={passage}
         />
       )}
       {isDAPhase(phase) && (
@@ -69,14 +68,6 @@ export default function StudentRouter({
           draftSummary={draftSummary}
           mentorId={mentorId}
           mentorName={mentorName}
-        />
-      )}
-      {isRevisionPhase(phase) && (
-        <RevisionPhase
-          session={session}
-          phase={phase}
-          passage={passage}
-          sessionData={sessionData}
         />
       )}
     </ToastProvider>

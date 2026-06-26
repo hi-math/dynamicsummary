@@ -42,6 +42,7 @@ export type SessionData = {
   summary: string | null;
   notes: string | null;
   submitted_at: string | null;
+  learning_completed?: boolean;
   updated_at?: string;
 };
 

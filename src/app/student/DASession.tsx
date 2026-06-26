@@ -10,13 +10,70 @@ import {
   submitDraft, saveNotes, saveSummary, studentAdvancePhase,
   startDASession, sendDAMessage, advanceDATab,
 } from '@/actions/student';
-import { sendHumanMessage, getHumanMessages, updatePresence, getPresence } from '@/actions/mentor';
-import { getSubmitLabel, cycleKeyFromPhase } from '@/lib/phases';
+import { sendHumanMessage, getHumanMessages, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
+import { cycleKeyFromPhase } from '@/lib/phases';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
 
 type LocalMsg = { role: 'user' | 'assistant'; content: string; id: string };
+
+// ─── Isolated chat input bar ────────────────────────────────────────────────────
+// Keeps its text in local state so typing never re-renders the heavy DASession tree
+// (this is why the mentor chat keeps focus and the old shared-state input did not).
+function ChatInputBar({
+  onSend,
+  loading,
+  placeholder,
+  disabled = false,
+}: {
+  onSend: (text: string) => void | Promise<void>;
+  loading: boolean;
+  placeholder: string;
+  disabled?: boolean;
+}) {
+  const [text, setText] = useState('');
+  const ref = useRef<HTMLInputElement>(null);
+
+  async function submit() {
+    const t = text.trim();
+    if (!t || loading || disabled) return;
+    setText('');
+    await onSend(t);
+    requestAnimationFrame(() => ref.current?.focus());
+  }
+
+  return (
+    <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
+      <input
+        ref={ref}
+        type="text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
+        placeholder={placeholder}
+        disabled={disabled}
+        className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
+      />
+      <button
+        onClick={submit}
+        disabled={loading || disabled || !text.trim()}
+        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center w-9"
+      >
+        {loading ? (
+          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+          </svg>
+        ) : (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+}
 
 // ─── Main component ────────────────────────────────────────────────────────────
 
@@ -46,9 +103,12 @@ export default function DASession({
   const { showToast } = useToast();
   const isChatbot = session.team === 'chatbot';
 
-  const [submitted, setSubmitted] = useState(!!sessionData?.submitted_at);
-  const [submitting, setSubmitting] = useState(false);
+  // DA starts automatically on entry — the summary was already finalized in the draft stage,
+  // so there is no separate submit step here.
+  const submitted = true;
   const [advancing, setAdvancing] = useState(false);
+  // Human team: mentor must mark "학습 완료" before the student can advance.
+  const [learningCompleted, setLearningCompleted] = useState(!!sessionData?.learning_completed);
   const [daState, setDaState] = useState<DASessionState | null>(initialDAState ?? null);
   // draftSummary: the draft text used for Assessor judgment; falls back to saved DA summary
   const initialSummary = draftSummary ?? sessionData?.summary ?? '';
@@ -86,12 +146,10 @@ export default function DASession({
   // Active tab index (into priority_queue)
   const [activeTabIdx, setActiveTabIdx] = useState(() => initialDAState?.current_item_idx ?? 0);
 
-  // Chat input & loading
-  const [input, setInput] = useState('');
+  // Chat loading & error (input text lives inside <ChatInputBar/> local state)
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState('');
   const bottomRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const inputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const daInitRef = useRef(false);
 
@@ -112,17 +170,11 @@ export default function DASession({
     bottomRefs.current['human']?.scrollIntoView({ behavior: 'smooth' });
   }, [messagesPerItem, activeItemKey, humanMsgs]);
 
-  // Focus input after AI response arrives (runs after DOM update, so input is no longer disabled)
-  useEffect(() => {
-    if (!chatLoading && isChatbot) {
-      inputRef.current?.focus();
-    }
-  }, [chatLoading, isChatbot]);
-
-  // Auto-init DA when page reloaded with submitted but no in-memory DA state
+  // Auto-start DA on entry (chatbot). Uses the pre-generated state if present
+  // (built during the comprehension phase); otherwise runs the Assessor pipeline now.
   useEffect(() => {
     const assessmentSummary = draftSummary || currentSummary;
-    if (!isChatbot || !submitted || daState || daInitRef.current || !assessmentSummary) return;
+    if (!isChatbot || daState || daInitRef.current || !assessmentSummary) return;
     daInitRef.current = true;
     setChatLoading(true);
     startDASession(session.id, phase, assessmentSummary, passage.content).then((res) => {
@@ -136,10 +188,20 @@ export default function DASession({
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [submitted]);
+  }, []);
+
+  // Record DA-phase entry once (summary already finalized in draft stage) so data is captured.
+  useEffect(() => {
+    if (sessionData?.submitted_at) return;
+    const assessmentSummary = draftSummary || currentSummary;
+    if (!assessmentSummary.trim()) return;
+    submitDraft(session.id, phase, assessmentSummary);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Human team polling
   const cycleKey = cycleKeyFromPhase(phase);
+  const cycleNum = cycleKey.replace('cycle', '');
   useEffect(() => {
     if (isChatbot) return;
     pollRef.current = setInterval(async () => {
@@ -148,6 +210,16 @@ export default function DASession({
     }, 1800);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [session.id, isChatbot]);
+
+  // Human team: poll mentor's learning-completion approval to enable the advance button
+  useEffect(() => {
+    if (isChatbot || learningCompleted) return;
+    const interval = setInterval(async () => {
+      const done = await getLearningComplete(session.id, phase);
+      if (done) setLearningCompleted(true);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [session.id, phase, isChatbot, learningCompleted]);
 
   // Own heartbeat — update our presence every 15s
   useEffect(() => {
@@ -170,50 +242,16 @@ export default function DASession({
     return () => clearInterval(interval);
   }, [isChatbot, mentorId]);
 
-  async function handleSubmit(summary: string) {
-    if (!summary.trim()) { showToast('요약문을 입력해주세요.', 'error'); return; }
-    setSubmitting(true);
-    const res = await submitDraft(session.id, phase, summary);
-    if (res?.error) { showToast(res.error, 'error'); setSubmitting(false); return; }
-
-    if (isChatbot) {
-      if (daState) {
-        // Pre-generated during comprehension phase — use existing state instantly
-        daInitRef.current = true;
-      } else {
-        // Run Assessor now (comprehension phase was skipped or team changed)
-        const assessmentSummary = draftSummary || summary;
-        setChatLoading(true);
-        const daRes = await startDASession(session.id, phase, assessmentSummary, passage.content);
-        setChatLoading(false);
-        if (daRes.error) { showToast(daRes.error, 'error'); setSubmitting(false); return; }
-        setDaState(daRes.state);
-        setActiveTabIdx(0);
-        if (daRes.openingUtterance && daRes.state.priority_queue[0]) {
-          const key = daRes.state.priority_queue[0];
-          setMessagesPerItem({ [key]: [{ role: 'assistant', content: daRes.openingUtterance, id: String(Date.now()) }] });
-        }
-        daInitRef.current = true;
-      }
-    } else {
-      showToast('요약문이 제출되었습니다. 멘토의 피드백을 기다려주세요.', 'success');
-    }
-    setSubmitting(false);
-    setSubmitted(true);
-  }
-
   function isTabLocked(idx: number): boolean {
     if (!daState) return true;
     return idx > (daState.current_item_idx ?? 0);
   }
 
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || chatLoading || !activeItemKey) return;
+  async function handleSend(text: string) {
+    if (!text.trim() || chatLoading || !activeItemKey) return;
     if (!daState) { setChatError('먼저 요약문을 제출해주세요.'); return; }
     if (daState.resolutions[activeItemKey]) return;
 
-    setInput('');
     setChatError('');
     setChatLoading(true);
 
@@ -279,10 +317,8 @@ export default function DASession({
     setChatLoading(false);
   }
 
-  async function handleHumanSend() {
-    const text = input.trim();
-    if (!text || chatLoading) return;
-    setInput('');
+  async function handleHumanSend(text: string) {
+    if (!text.trim() || chatLoading) return;
     setChatLoading(true);
     await sendHumanMessage(session.id, session.id, text, cycleKey);
     const fresh = await getHumanMessages(session.id, cycleKey);
@@ -294,7 +330,8 @@ export default function DASession({
     setAdvancing(true);
     const res = await studentAdvancePhase(session.id);
     setAdvancing(false);
-    if (res?.error) showToast(res.error, 'error');
+    if (res?.error) { showToast(res.error, 'error'); return; }
+    showToast(`사이클 ${cycleNum}이 종료되었습니다. 수고하셨습니다.`, 'success');
   }
 
   async function handleSummaryBlur(value: string) {
@@ -309,19 +346,7 @@ export default function DASession({
   // ─── Right panel ─────────────────────────────────────────────────────────────
 
   function renderChatbotPanel() {
-    // Before submit
-    if (!submitted) {
-      return (
-        <div className="h-full flex flex-col items-center justify-center bg-white border border-slate-200 rounded-lg p-6 text-center gap-3">
-          <svg className="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-          <p className="text-sm text-slate-400">요약문을 제출하면 과제가 시작됩니다.</p>
-        </div>
-      );
-    }
-
-    // Submitted but DA not ready yet
+    // DA not ready yet (pipeline still running)
     if (!daState || tabs.length === 0) {
       return (
         <div className="h-full flex flex-col items-center justify-center bg-white border border-slate-200 rounded-lg p-6 gap-3">
@@ -384,11 +409,6 @@ export default function DASession({
                 }`}>
                   {msg.content}
                 </div>
-                {isUser && (
-                  <div className="w-6 h-6 rounded-full bg-slate-300 flex items-center justify-center text-slate-600 text-xs ml-2 shrink-0 mt-0.5">
-                    {session.name[0]}
-                  </div>
-                )}
               </div>
             );
           })}
@@ -411,34 +431,7 @@ export default function DASession({
 
         {/* Input — hidden when tab is resolved */}
         {!isResolved && (
-          <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder="메시지를 입력하세요..."
-              disabled={chatLoading}
-              className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50"
-            />
-            <button
-              onClick={handleSend}
-              disabled={chatLoading || !input.trim()}
-              className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center w-9"
-            >
-              {chatLoading ? (
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              )}
-            </button>
-          </div>
+          <ChatInputBar onSend={handleSend} loading={chatLoading} placeholder="메시지를 입력하세요..." />
         )}
       </div>
     );
@@ -492,7 +485,6 @@ export default function DASession({
                 <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${
                   isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
                 }`}>
-                  {!isMe && <p className="text-xs font-medium text-slate-500 mb-0.5">{mentorLabel}</p>}
                   {msg.content}
                 </div>
               </div>
@@ -507,26 +499,12 @@ export default function DASession({
         </div>
 
         {/* Input */}
-        <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleHumanSend(); } }}
-            placeholder={chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
-            disabled={!chatEnabled || chatLoading}
-            className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
-          />
-          <button
-            onClick={handleHumanSend}
-            disabled={!chatEnabled || chatLoading || !input.trim()}
-            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-            </svg>
-          </button>
-        </div>
+        <ChatInputBar
+          onSend={handleHumanSend}
+          loading={chatLoading}
+          disabled={!chatEnabled}
+          placeholder={chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
+        />
       </div>
     );
   }
@@ -546,9 +524,10 @@ export default function DASession({
                 initialValue={initialSummary}
                 onBlur={handleSummaryBlur}
                 onValueChange={setCurrentSummary}
-                onSubmit={handleSubmit}
                 submitted={submitted}
-                submitting={submitting}
+                submitting={false}
+                hideSubmit={true}
+                passageContent={passage.content}
               />
             </div>
           </div>
@@ -570,7 +549,8 @@ export default function DASession({
       <div className="shrink-0 flex justify-end">
         <button
           onClick={handleAdvance}
-          disabled={advancing || (isChatbot ? !allResolved : !submitted)}
+          disabled={advancing || (isChatbot ? !allResolved : !learningCompleted)}
+          title={!isChatbot && !learningCompleted ? '멘토가 학습 완료를 승인하면 활성화됩니다.' : undefined}
           className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
         >
           {advancing && (
@@ -579,7 +559,7 @@ export default function DASession({
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
             </svg>
           )}
-          {advancing ? '처리 중...' : getSubmitLabel(phase) === '제출' ? '다음 단계 →' : getSubmitLabel(phase)}
+          {advancing ? '처리 중...' : `사이클 ${cycleNum} 종료`}
         </button>
       </div>
     </div>

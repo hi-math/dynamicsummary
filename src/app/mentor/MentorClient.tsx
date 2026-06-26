@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   getHumanMessages, sendHumanMessage, getMentorStudents,
   updatePresence, getPresenceBatch, getStudentSummary, getCyclePassage,
+  getMentorNote, saveMentorNote, getLearningComplete, setLearningComplete,
 } from '@/actions/mentor';
 import { isDAPhase, cycleKeyFromPhase, PHASE_LABEL, PHASE_GROUPS } from '@/lib/phases';
 import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
@@ -97,6 +98,47 @@ function StudentSummaryPanel({ summary, loading }: { summary: string | null; loa
   );
 }
 
+// ─── Mentor notes panel ───────────────────────────────────────────────────────
+
+function MentorNotesPanel({
+  noteKey,
+  initialValue,
+  onSave,
+}: {
+  noteKey: string; // student+cycle identity — remounts panel on change
+  initialValue: string;
+  onSave: (value: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+
+  useEffect(() => { setValue(initialValue); setStatus('idle'); }, [initialValue, noteKey]);
+
+  async function handleBlur() {
+    setStatus('saving');
+    await onSave(value);
+    setStatus('saved');
+  }
+
+  return (
+    <div className="flex flex-col h-full bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between">
+        <h3 className="text-base font-semibold text-slate-700">멘토 메모</h3>
+        <span className="text-xs text-slate-400">
+          {status === 'saving' ? '저장 중...' : status === 'saved' ? '저장됨' : '자동 저장'}
+        </span>
+      </div>
+      <textarea
+        className="flex-1 p-4 text-base text-slate-700 focus:outline-none resize-none leading-relaxed"
+        placeholder="학생 관찰·평가 메모를 자유롭게 입력하세요 (포커스 해제 시 자동 저장, 사이클별로 구분됨)..."
+        value={value}
+        onChange={(e) => { setValue(e.target.value); if (status !== 'idle') setStatus('idle'); }}
+        onBlur={handleBlur}
+      />
+    </div>
+  );
+}
+
 // ─── Chat panel ───────────────────────────────────────────────────────────────
 
 function ChatPanelMentor({
@@ -115,6 +157,7 @@ function ChatPanelMentor({
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -125,6 +168,7 @@ function ChatPanelMentor({
     setSending(true);
     await onSend(text);
     setSending(false);
+    requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   return (
@@ -182,6 +226,7 @@ function ChatPanelMentor({
 
       <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
         <input
+          ref={inputRef}
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -220,6 +265,10 @@ export default function MentorClient({
   const [passage, setPassage] = useState<Passage | null>(null);
   const [studentSummary, setStudentSummary] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
+  const [note, setNote] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [learningDone, setLearningDone] = useState(false);
+  const [togglingDone, setTogglingDone] = useState(false);
 
   // Sync selected when student list refreshes (phase change, etc.)
   useEffect(() => {
@@ -303,6 +352,18 @@ export default function MentorClient({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selected?.current_phase]);
 
+  // Load mentor note when selected student or cycle changes
+  useEffect(() => {
+    if (!selected) { setNote(''); return; }
+    const cycleKey = cycleKeyFromPhase(selected.current_phase);
+    let cancelled = false;
+    getMentorNote(session.id, selected.id, cycleKey).then((n) => {
+      if (!cancelled) setNote(n);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id, selected ? cycleKeyFromPhase(selected.current_phase) : null]);
+
   async function handleSend(text: string) {
     if (!selected) return;
     const cycleKey = cycleKeyFromPhase(selected.current_phase);
@@ -311,42 +372,96 @@ export default function MentorClient({
     setMessages(msgs);
   }
 
+  async function handleSaveNote(value: string) {
+    if (!selected) return;
+    const cycleKey = cycleKeyFromPhase(selected.current_phase);
+    await saveMentorNote(session.id, selected.id, cycleKey, value);
+    setNote(value);
+  }
+
+  // Load learning-completion flag for the selected student's DA phase
+  // (button only renders in the DA branch, so a stale value off-DA is never shown)
+  useEffect(() => {
+    if (!selected || !isDAPhase(selected.current_phase)) return;
+    let cancelled = false;
+    getLearningComplete(selected.id, selected.current_phase).then((v) => {
+      if (!cancelled) setLearningDone(v);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id, selected?.current_phase]);
+
+  async function handleToggleComplete() {
+    if (!selected || togglingDone) return;
+    const next = !learningDone;
+    setTogglingDone(true);
+    const res = await setLearningComplete(selected.id, selected.current_phase, next);
+    setTogglingDone(false);
+    if (!res.error) setLearningDone(next);
+  }
+
   const inDA = selected ? isDAPhase(selected.current_phase) : false;
   const studentOnline = selected ? isOnline(presenceMap[selected.id]) : false;
 
   return (
     <div className="flex flex-1 overflow-hidden h-full">
-      {/* Sidebar */}
-      <aside className="w-52 bg-white border-r border-slate-200 flex flex-col shrink-0">
-        <div className="px-4 py-3 border-b border-slate-200">
-          <h2 className="text-base font-semibold text-slate-700">담당 학생</h2>
-          <p className="text-base text-slate-400 mt-0.5">휴먼팀 · {students.length}명</p>
-        </div>
-        <div className="flex-1 overflow-y-auto py-2">
-          {students.length === 0 && (
-            <p className="text-base text-slate-400 text-center py-6">학생이 없습니다.</p>
-          )}
-          {students.map((s) => (
+      {/* Sidebar — collapsible */}
+      {sidebarCollapsed ? (
+        <aside className="w-10 bg-white border-r border-slate-200 flex flex-col items-center py-3 gap-3 shrink-0">
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            title="학생 목록 펼치기"
+            className="text-slate-400 hover:text-indigo-600 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+            </svg>
+          </button>
+          <span className="text-xs text-slate-300 [writing-mode:vertical-rl] select-none mt-1">담당 학생 {students.length}</span>
+        </aside>
+      ) : (
+        <aside className="w-52 bg-white border-r border-slate-200 flex flex-col shrink-0">
+          <div className="px-4 py-3 border-b border-slate-200 flex items-start justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-slate-700">담당 학생</h2>
+              <p className="text-base text-slate-400 mt-0.5">휴먼팀 · {students.length}명</p>
+            </div>
             <button
-              key={s.id}
-              onClick={() => setSelected(s)}
-              className={`w-full text-left px-4 py-2.5 hover:bg-slate-50 transition-colors ${
-                selected?.id === s.id ? 'bg-indigo-50 border-r-2 border-indigo-600' : ''
-              }`}
+              onClick={() => setSidebarCollapsed(true)}
+              title="학생 목록 접기"
+              className="text-slate-400 hover:text-slate-600 transition-colors shrink-0 mt-0.5"
             >
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${isOnline(presenceMap[s.id]) ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                <p className={`text-base font-medium truncate ${selected?.id === s.id ? 'text-indigo-700' : 'text-slate-700'}`}>
-                  {s.name}
-                </p>
-              </div>
-              <p className="text-base text-slate-400 mt-0.5 ml-4">
-                {PHASE_LABEL[s.current_phase as keyof typeof PHASE_LABEL] ?? s.current_phase}
-              </p>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+              </svg>
             </button>
-          ))}
-        </div>
-      </aside>
+          </div>
+          <div className="flex-1 overflow-y-auto py-2">
+            {students.length === 0 && (
+              <p className="text-base text-slate-400 text-center py-6">학생이 없습니다.</p>
+            )}
+            {students.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setSelected(s)}
+                className={`w-full text-left px-4 py-2.5 hover:bg-slate-50 transition-colors ${
+                  selected?.id === s.id ? 'bg-indigo-50 border-r-2 border-indigo-600' : ''
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${isOnline(presenceMap[s.id]) ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  <p className={`text-base font-medium truncate ${selected?.id === s.id ? 'text-indigo-700' : 'text-slate-700'}`}>
+                    {s.name}
+                  </p>
+                </div>
+                <p className="text-base text-slate-400 mt-0.5 ml-4">
+                  {PHASE_LABEL[s.current_phase as keyof typeof PHASE_LABEL] ?? s.current_phase}
+                </p>
+              </button>
+            ))}
+          </div>
+        </aside>
+      )}
 
       {/* Main content */}
       {!selected ? (
@@ -357,28 +472,55 @@ export default function MentorClient({
           </svg>
           <p className="text-base">왼쪽에서 학생을 선택하세요.</p>
         </div>
-      ) : inDA ? (
-        /* DA phase: passage | summary | chat */
-        <div className="flex-1 flex gap-3 p-3 min-h-0 overflow-hidden">
-          <div className="flex-1 min-h-0">
-            <ReadingPassagePanel title={passage?.title ?? ''} content={passage?.content ?? ''} />
-          </div>
-          <div className="flex-1 min-h-0">
-            <StudentSummaryPanel summary={studentSummary} loading={dataLoading} />
-          </div>
-          <div className="flex-1 min-h-0">
-            <ChatPanelMentor
-              session={session}
-              selected={selected}
-              messages={messages}
-              studentOnline={studentOnline}
-              onSend={handleSend}
-            />
-          </div>
-        </div>
       ) : (
-        /* Non-DA phase: progress card */
-        <ProgressPanel student={selected} />
+        /* Selected student */
+        <div className="flex-1 flex gap-3 p-3 min-h-0 overflow-hidden">
+          {inDA ? (
+            /* DA phase: passage | (summary + notes) | chat */
+            <>
+              <div className="flex-1 min-h-0">
+                <ReadingPassagePanel title={passage?.title ?? ''} content={passage?.content ?? ''} />
+              </div>
+              <div className="flex-1 min-h-0 flex flex-col gap-3">
+                <div className="flex-1 min-h-0">
+                  <StudentSummaryPanel summary={studentSummary} loading={dataLoading} />
+                </div>
+                <button
+                  onClick={handleToggleComplete}
+                  disabled={togglingDone}
+                  className={`shrink-0 py-2.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${
+                    learningDone
+                      ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  }`}
+                >
+                  {togglingDone ? '처리 중...' : learningDone ? '✓ 학습 완료됨 (클릭하여 취소)' : '학습 완료'}
+                </button>
+                <div className="h-56 shrink-0">
+                  <MentorNotesPanel
+                    noteKey={`${selected.id}_${cycleKeyFromPhase(selected.current_phase)}`}
+                    initialValue={note}
+                    onSave={handleSaveNote}
+                  />
+                </div>
+              </div>
+              <div className="flex-1 min-h-0">
+                <ChatPanelMentor
+                  session={session}
+                  selected={selected}
+                  messages={messages}
+                  studentOnline={studentOnline}
+                  onSend={handleSend}
+                />
+              </div>
+            </>
+          ) : (
+            /* Non-DA phase: progress card only (mentor notes appear in DA only) */
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <ProgressPanel student={selected} />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/components/ui/Toast';
 import Modal from '@/components/ui/Modal';
 import { submitComprehensionAnswers, studentAdvancePhase, preGenerateDASession } from '@/actions/student';
+import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import type { SessionCookie, ComprehensionQuestion } from '@/types';
+
+type Passage = { cycle_key: string; title: string; content: string };
 
 const TIME_LIMIT_SEC = 180; // 3 minutes
 
@@ -14,14 +17,14 @@ export default function ComprehensionPhase({
   questions,
   alreadySubmitted,
   draftSummary,
-  passageContent,
+  passage,
 }: {
   session: SessionCookie;
   phase: string;
   questions: ComprehensionQuestion[];
   alreadySubmitted: boolean;
   draftSummary?: string;
-  passageContent?: string;
+  passage: Passage;
 }) {
   const { showToast } = useToast();
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -52,9 +55,9 @@ export default function ComprehensionPhase({
   // Pre-generate DA session in background while student answers comprehension questions
   useEffect(() => {
     if (session.team !== 'chatbot') return;
-    if (!draftSummary?.trim() || !passageContent?.trim()) return;
+    if (!draftSummary?.trim() || !passage.content?.trim()) return;
     const daPhase = phase.replace('_comprehension', '_da');
-    preGenerateDASession(session.id, daPhase, draftSummary, passageContent);
+    preGenerateDASession(session.id, daPhase, draftSummary, passage.content);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -99,61 +102,69 @@ export default function ComprehensionPhase({
   }
 
   return (
-    <div className="h-full flex flex-col p-6 gap-4 overflow-y-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between shrink-0">
-        <h2 className="text-base font-semibold text-slate-800">지문 이해도 검사</h2>
-        <div className={`text-sm font-mono font-semibold px-3 py-1 rounded-lg ${timeLeft <= 30 ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
-          {mm}:{ss}
-        </div>
+    <div className="h-full flex flex-col md:flex-row gap-4 p-6 overflow-hidden">
+      {/* Left: reading passage */}
+      <div className="md:w-1/2 h-1/2 md:h-full shrink-0">
+        <ReadingPassagePanel title={passage.title} content={passage.content} />
       </div>
 
-      {/* Questions */}
-      <div className="flex flex-col gap-5 flex-1">
-        {questions.map((q, idx) => (
-          <div key={q.id} className="bg-white border border-slate-200 rounded-xl p-5">
-            <p className="text-sm font-medium text-slate-800 mb-3">
-              <span className="text-indigo-600 font-semibold mr-2">Q{idx + 1}.</span>
-              {q.stem}
-            </p>
-            {q.type === 'mc' && q.options ? (
-              <div className="flex flex-col gap-2">
-                {q.options.map((opt, i) => (
-                  <label key={i} className="flex items-center gap-2.5 cursor-pointer group">
-                    <input
-                      type="radio"
-                      name={q.id}
-                      value={opt}
-                      checked={answers[q.id] === opt}
-                      onChange={() => setAnswers((a) => ({ ...a, [q.id]: opt }))}
-                      className="text-indigo-600 focus:ring-indigo-400"
-                    />
-                    <span className="text-sm text-slate-700 group-hover:text-slate-900">{opt}</span>
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <textarea
-                rows={3}
-                placeholder="답변을 입력하세요..."
-                value={answers[q.id] ?? ''}
-                onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
-              />
-            )}
+      {/* Right: comprehension questions */}
+      <div className="md:w-1/2 flex-1 flex flex-col min-h-0">
+        {/* Header */}
+        <div className="flex items-center justify-between shrink-0 mb-3">
+          <h2 className="text-base font-semibold text-slate-800">지문 이해도 검사</h2>
+          <div className={`text-sm font-mono font-semibold px-3 py-1 rounded-lg ${timeLeft <= 30 ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
+            {mm}:{ss}
           </div>
-        ))}
-      </div>
+        </div>
 
-      {/* Submit */}
-      <div className="shrink-0 flex justify-end pt-2">
-        <button
-          onClick={() => setShowConfirmModal(true)}
-          disabled={submitting || !allAnswered}
-          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
-        >
-          제출
-        </button>
+        {/* Questions */}
+        <div className="flex flex-col gap-5 flex-1 overflow-y-auto scrollbar-thin pr-1">
+          {questions.map((q, idx) => (
+            <div key={q.id} className="bg-white border border-slate-200 rounded-xl p-5">
+              <p className="text-sm font-medium text-slate-800 mb-3">
+                <span className="text-indigo-600 font-semibold mr-2">Q{idx + 1}.</span>
+                {q.stem}
+              </p>
+              {q.type === 'mc' && q.options ? (
+                <div className="flex flex-col gap-2">
+                  {q.options.map((opt, i) => (
+                    <label key={i} className="flex items-center gap-2.5 cursor-pointer group">
+                      <input
+                        type="radio"
+                        name={q.id}
+                        value={opt}
+                        checked={answers[q.id] === opt}
+                        onChange={() => setAnswers((a) => ({ ...a, [q.id]: opt }))}
+                        className="text-indigo-600 focus:ring-indigo-400"
+                      />
+                      <span className="text-sm text-slate-700 group-hover:text-slate-900">{opt}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <textarea
+                  rows={3}
+                  placeholder="답변을 입력하세요..."
+                  value={answers[q.id] ?? ''}
+                  onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Submit */}
+        <div className="shrink-0 flex justify-end pt-3">
+          <button
+            onClick={() => setShowConfirmModal(true)}
+            disabled={submitting || !allAnswered}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            제출
+          </button>
+        </div>
       </div>
 
       {/* Confirmation modal */}
