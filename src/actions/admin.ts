@@ -15,7 +15,31 @@ export async function getUsers(): Promise<User[]> {
     .select('*')
     .order('created_at', { ascending: true });
   if (error) throw error;
-  return (data ?? []) as User[];
+  const users = (data ?? []) as User[];
+  // Manual display order first (sort_order), then creation order as a fallback for
+  // rows that have never been dragged. Tolerant of the column being absent.
+  users.sort((a, b) => {
+    const ao = a.sort_order, bo = b.sort_order;
+    if (ao != null && bo != null && ao !== bo) return ao - bo;
+    if (ao != null && bo == null) return -1;
+    if (ao == null && bo != null) return 1;
+    return (a.created_at ?? '').localeCompare(b.created_at ?? '');
+  });
+  return users;
+}
+
+// Persist a new manual ordering of accounts (drag-to-reorder in the admin list).
+export async function reorderUsers(orderedIds: string[]) {
+  const supabase = createServerClient();
+  const results = await Promise.all(
+    orderedIds.map((id, idx) =>
+      supabase.from('users').update({ sort_order: idx }).eq('id', id),
+    ),
+  );
+  const failed = results.find((r) => r.error);
+  if (failed?.error) return { error: failed.error.message };
+  revalidatePath('/admin');
+  return { success: true };
 }
 
 export async function createUser(formData: FormData) {
@@ -155,6 +179,7 @@ export async function saveAPISettings(formData: FormData) {
     updated_at: new Date().toISOString(),
   });
   if (error) return { error: error.message };
+  revalidatePath('/admin');
   return { success: true };
 }
 
@@ -175,6 +200,7 @@ export async function savePrompts(formData: FormData) {
     updated_at: new Date().toISOString(),
   });
   if (error) return { error: error.message };
+  revalidatePath('/admin');
   return { success: true };
 }
 
@@ -195,6 +221,7 @@ export async function savePassage(formData: FormData) {
     updated_at: new Date().toISOString(),
   });
   if (error) return { error: error.message };
+  revalidatePath('/admin');
   return { success: true };
 }
 

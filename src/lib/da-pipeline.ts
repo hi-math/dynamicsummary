@@ -174,6 +174,21 @@ Respond ONLY with valid JSON:
 
 // ─── Session initialization: Assessor → Verifier (max 2) → Priority ──────────
 
+function buildInitState(finalOutput: AssessorOutput, confidence: DiagnosisConfidence): DASessionState {
+  return {
+    priority_queue: calculatePriorityQueue(finalOutput),
+    current_item_idx: 0,
+    current_step: 1,
+    item_identification_cumulative: false,
+    item_verbalization_cumulative: false,
+    item_resolution_pending: false,
+    resolutions: {},
+    session_complete: false,
+    diagnosis_confidence: confidence,
+    assessor_output: finalOutput,
+  };
+}
+
 export async function initDASession(
   summary: string,
   passageContent: string,
@@ -184,6 +199,7 @@ export async function initDASession(
   assessorOutputsAll: AssessorOutput[];
   verifierNotesAll: string[];
   confidence: DiagnosisConfidence;
+  openingUtterance: string;
 }> {
   const assessorOutputsAll: AssessorOutput[] = [];
   const verifierNotesAll: string[] = [];
@@ -192,7 +208,14 @@ export async function initDASession(
   const assessor1 = await runAssessor(summary, passageContent, prompts['prompt_assessor'] ?? '', api);
   assessorOutputsAll.push(assessor1);
 
-  // 1st Verifier
+  // Speculatively generate the opening message from assessor1 IN PARALLEL with the
+  // verifier. On the common high-confidence path (verifier passes) assessor1 is the
+  // final diagnosis, so the opening is already valid and its latency is fully hidden
+  // behind the verifier call. Errors are swallowed → we regenerate below if needed.
+  const speculativeState = buildInitState(assessor1, 'high');
+  const openingPromise = generateOpeningMessage(speculativeState, prompts, api).catch(() => null);
+
+  // 1st Verifier (runs concurrently with the speculative opening above)
   const verifier1 = await runAssessorVerifier(assessor1, summary, passageContent, prompts['prompt_assessor_verifier'] ?? '', api);
   verifierNotesAll.push(verifier1.notes);
 
@@ -221,68 +244,54 @@ export async function initDASession(
     }
   }
 
-  const priorityQueue = calculatePriorityQueue(finalOutput);
+  const state = buildInitState(finalOutput, confidence);
 
-  const state: DASessionState = {
-    priority_queue: priorityQueue,
-    current_item_idx: 0,
-    current_step: 1,
-    item_identification_cumulative: false,
-    item_verbalization_cumulative: false,
-    item_resolution_pending: false,
-    resolutions: {},
-    session_complete: false,
-    diagnosis_confidence: confidence,
-    assessor_output: finalOutput,
-  };
+  // Reuse the speculative opening when the final priority queue matches the one it was
+  // generated from (i.e. finalOutput === assessor1); otherwise regenerate for assessor2.
+  const speculativeOpening = await openingPromise;
+  const openingUtterance = (finalOutput === assessor1 && speculativeOpening)
+    ? speculativeOpening
+    : await generateOpeningMessage(state, prompts, api);
 
-  return { state, assessorOutputsAll, verifierNotesAll, confidence };
+  return { state, assessorOutputsAll, verifierNotesAll, confidence, openingUtterance };
 }
 
 // ─── One-turn pipeline ────────────────────────────────────────────────────────
 
-async function runClassifier(
+// Combined Classifier + Evaluator (single LLM call).
+// Merging the two judgment nodes halves the common on_track turn latency
+// (previously Classifier → Evaluator → Mediator = 3 serial calls; now 2).
+type AnalysisResult = {
+  classification: Classification;
+  identification_success: boolean;
+  remedial_verbalization_success: boolean;
+};
+
+async function runAnalysis(
   studentMessage: string,
   currentItem: string,
   state: DASessionState,
   prompts: Record<string, string>,
   api: APISettings,
-): Promise<Classification> {
-  const sysPrompt = prompts['prompt_classifier'] || `You are a Classifier in a DA tutoring pipeline.
-Classify the student's response into exactly ONE of:
-- "on_track": response attempts to address the current writing problem (even partially)
+): Promise<AnalysisResult> {
+  const sysPrompt = prompts['prompt_analysis'] || `You are the analysis node in a DA tutoring pipeline. In ONE pass you do two jobs:
+
+(1) CLASSIFY the student's response into exactly one of:
+- "on_track": attempts to address the current writing problem (even partially)
 - "confusion": explicit signal of not knowing (e.g., "I don't know", "I'm not sure what to do")
 - "off_topic": unrelated to the current tutoring flow
 
-Respond ONLY with valid JSON: { "classification": "on_track"|"confusion"|"off_topic" }`;
+(2) EVALUATE two boolean conditions (only meaningful when classification is "on_track"):
+- identification_success: Did the student identify their own writing problem in their own words?
+- remedial_verbalization_success: Did the student verbalize HOW to fix the problem in their own words?
 
-  const userInput = `Current item: ${currentItem}\nCurrent step: ${state.current_step}\nStudent message: ${studentMessage}`;
-  const raw = await callLLMNode(sysPrompt, userInput, api);
-  const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) return 'on_track';
-  const parsed = JSON.parse(json);
-  return parsed.classification as Classification;
-}
-
-async function runEvaluator(
-  studentMessage: string,
-  currentItem: string,
-  state: DASessionState,
-  prompts: Record<string, string>,
-  api: APISettings,
-): Promise<{ identification_success: boolean; remedial_verbalization_success: boolean }> {
-  const sysPrompt = prompts['prompt_evaluator'] || `You are an Evaluator in a DA tutoring pipeline.
-Given the student's response, judge two boolean conditions:
-1. identification_success: Did the student identify their own writing problem in their own words?
-2. remedial_verbalization_success: Did the student verbalize HOW to fix the problem in their own words?
-
-IMPORTANT cumulative rules:
+Cumulative rules for (2):
 - If identification_already_true=true, set identification_success=true unconditionally (do not re-judge).
 - If verbalization_already_true=true, set remedial_verbalization_success=true unconditionally.
-- Only judge conditions that are still false.
+- Only judge conditions still false. If classification is not "on_track", keep any already-true flags but do not newly grant either condition.
 
 Respond ONLY with valid JSON:
-{ "identification_success": true|false, "remedial_verbalization_success": true|false }`;
+{ "classification": "on_track"|"confusion"|"off_topic", "identification_success": true|false, "remedial_verbalization_success": true|false }`;
 
   const userInput = JSON.stringify({
     current_item: currentItem,
@@ -295,8 +304,15 @@ Respond ONLY with valid JSON:
 
   const raw = await callLLMNode(sysPrompt, userInput, api);
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) return { identification_success: false, remedial_verbalization_success: false };
-  return JSON.parse(json);
+  if (!json) {
+    return { classification: 'on_track', identification_success: false, remedial_verbalization_success: false };
+  }
+  const parsed = JSON.parse(json);
+  return {
+    classification: (parsed.classification ?? 'on_track') as Classification,
+    identification_success: parsed.identification_success === true,
+    remedial_verbalization_success: parsed.remedial_verbalization_success === true,
+  };
 }
 
 async function runReexplainer(
@@ -455,12 +471,15 @@ export async function processTurn(
     }
   }
 
-  // [코드] Classifier 호출
-  const classification = await runClassifier(studentMessage, currentItem, state, prompts, api);
+  // [코드] Analysis 호출 (Classifier + Evaluator 병합)
+  const analysis = await runAnalysis(studentMessage, currentItem, state, prompts, api);
+  const classification = analysis.classification;
 
   if (classification === 'on_track') {
-    // [코드] Evaluator 호출
-    const evalResult = await runEvaluator(studentMessage, currentItem, updatedState, prompts, api);
+    const evalResult = {
+      identification_success: analysis.identification_success,
+      remedial_verbalization_success: analysis.remedial_verbalization_success,
+    };
 
     // [코드] 누적 필드 갱신
     if (evalResult.identification_success) updatedState.item_identification_cumulative = true;

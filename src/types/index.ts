@@ -10,6 +10,7 @@ export type User = {
   team: Team | null;
   mentor_id: string | null;
   current_phase: string;
+  sort_order?: number | null;   // manual display order in the admin account list
   created_at?: string;
 };
 
@@ -52,6 +53,7 @@ export type AIMessage = {
   phase: string;
   role: 'user' | 'assistant';
   content: string;
+  item_idx: number;   // which DA task (priority_queue index) this message belongs to
   created_at: string;
 };
 

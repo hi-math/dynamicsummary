@@ -146,10 +146,18 @@ export default function APITab({ initialAPI }: { initialAPI: APISettings | null 
             </>
           )}
 
-          {/* Hidden fields for unused providers */}
-          <input type="hidden" name="openai_key" value={initialAPI?.openai_key ?? ''} />
-          <input type="hidden" name="anthropic_key" value={initialAPI?.anthropic_key ?? ''} />
-          <input type="hidden" name="gemini_key" value={initialAPI?.gemini_key ?? ''} />
+          {/* Preserve keys for the non-active providers. The active provider's key is
+              submitted by its visible input above — rendering a hidden field with the
+              same name here too would create a duplicate. */}
+          {provider !== 'openai' && (
+            <input type="hidden" name="openai_key" value={initialAPI?.openai_key ?? ''} />
+          )}
+          {provider !== 'anthropic' && (
+            <input type="hidden" name="anthropic_key" value={initialAPI?.anthropic_key ?? ''} />
+          )}
+          {provider !== 'gemini' && (
+            <input type="hidden" name="gemini_key" value={initialAPI?.gemini_key ?? ''} />
+          )}
 
           <button type="submit" disabled={saving}
             className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-medium py-2 rounded-lg transition-colors">

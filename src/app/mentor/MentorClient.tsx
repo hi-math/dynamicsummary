@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  getHumanMessages, sendHumanMessage, getMentorStudents,
+  sendHumanMessage, getMentorStudents,
   updatePresence, getPresenceBatch, getStudentSummary, getCyclePassage,
   getMentorNote, saveMentorNote, getLearningComplete, setLearningComplete,
 } from '@/actions/mentor';
 import { isDAPhase, cycleKeyFromPhase, PHASE_LABEL, PHASE_GROUPS } from '@/lib/phases';
+import { computeSummarySegments } from '@/lib/highlight';
 import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import type { HumanMessage, User, SessionCookie } from '@/types';
 
@@ -14,6 +15,15 @@ type Passage = { title: string; content: string };
 
 function isOnline(lastSeen?: string): boolean {
   return !!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 30000;
+}
+
+// Keep optimistic (tmp_) messages the server hasn't confirmed yet, so a poll landing
+// before the insert commits can't momentarily wipe a just-sent message.
+function mergePending(serverRows: HumanMessage[], prev: HumanMessage[]): HumanMessage[] {
+  const stillPending = prev.filter(
+    (m) => m.id.startsWith('tmp_') && !serverRows.some((s) => s.sender_id === m.sender_id && s.content === m.content),
+  );
+  return [...serverRows, ...stillPending];
 }
 
 // ─── Progress panel (non-DA phases) ───────────────────────────────────────────
@@ -76,12 +86,34 @@ function ProgressPanel({ student }: { student: User }) {
 
 // ─── Read-only summary panel ──────────────────────────────────────────────────
 
-function StudentSummaryPanel({ summary, loading }: { summary: string | null; loading: boolean }) {
+function StudentSummaryPanel({ summary, loading, passageContent = '' }: { summary: string | null; loading: boolean; passageContent?: string }) {
+  const [highlightOn, setHighlightOn] = useState(true);
+  const highlightActive = highlightOn && !!passageContent.trim();
+  const segments = useMemo(
+    () => (summary && highlightActive ? computeSummarySegments(summary, passageContent) : null),
+    [summary, highlightActive, passageContent]
+  );
+
   return (
     <div className="flex flex-col h-full bg-white border border-slate-200 rounded-lg overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between">
-        <h3 className="text-base font-semibold text-slate-700">학생 요약문</h3>
-        {loading && <span className="text-base text-slate-400">불러오는 중...</span>}
+      <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between gap-2">
+        <h3 className="text-base font-semibold text-slate-700 shrink-0">학생 요약문</h3>
+        <div className="flex items-center gap-3 shrink-0">
+          {loading && <span className="text-base text-slate-400">불러오는 중...</span>}
+          {passageContent.trim() && (
+            <button
+              type="button"
+              onClick={() => setHighlightOn((v) => !v)}
+              title="지문과 4단어 이상 동일한 부분 하이라이트"
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+            >
+              <span className={`relative w-7 h-4 rounded-full transition-colors ${highlightOn ? 'bg-indigo-500' : 'bg-slate-300'}`}>
+                <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all ${highlightOn ? 'left-3.5' : 'left-0.5'}`} />
+              </span>
+              하이라이트
+            </button>
+          )}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4">
         {loading ? (
@@ -89,7 +121,17 @@ function StudentSummaryPanel({ summary, loading }: { summary: string | null; loa
             <div className="w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : summary ? (
-          <p className="text-base text-slate-700 leading-relaxed whitespace-pre-wrap">{summary}</p>
+          <p className="text-base text-slate-700 leading-relaxed whitespace-pre-wrap">
+            {segments
+              ? segments.map((seg, i) =>
+                  seg.hl ? (
+                    <mark key={i} className="bg-yellow-200 text-slate-800 rounded-sm">{seg.text}</mark>
+                  ) : (
+                    <span key={i}>{seg.text}</span>
+                  )
+                )
+              : summary}
+          </p>
         ) : (
           <p className="text-base text-slate-400 italic">아직 요약문이 없습니다.</p>
         )}
@@ -313,11 +355,19 @@ export default function MentorClient({
     setMessages([]); // clear immediately on cycle/student change
     async function load() {
       if (!selected) return;
-      const msgs = await getHumanMessages(selected.id, cycleKeyFromPhase(selected.current_phase));
-      setMessages(msgs);
+      // Poll via the GET route handler (not a Server Action) so it doesn't serialize
+      // with sendHumanMessage/presence actions and add send→receive latency.
+      const res = await fetch(
+        `/api/human-messages?studentId=${encodeURIComponent(selected.id)}&cycleKey=${encodeURIComponent(cycleKey)}`,
+        { cache: 'no-store' },
+      );
+      if (res.ok) {
+        const rows = (await res.json()) as HumanMessage[];
+        setMessages((prev) => mergePending(rows, prev));
+      }
     }
     load();
-    const interval = setInterval(load, 1800);
+    const interval = setInterval(load, 1200);
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selected?.current_phase]);
@@ -367,9 +417,18 @@ export default function MentorClient({
   async function handleSend(text: string) {
     if (!selected) return;
     const cycleKey = cycleKeyFromPhase(selected.current_phase);
-    await sendHumanMessage(selected.id, session.id, text, cycleKey);
-    const msgs = await getHumanMessages(selected.id, cycleKey);
-    setMessages(msgs);
+    // Optimistic: show my message immediately; the poll reconciles it with the row.
+    const tmpId = `tmp_${Date.now()}`;
+    const optimistic: HumanMessage = {
+      id: tmpId,
+      student_id: selected.id,
+      sender_id: session.id,
+      content: text,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    const res = await sendHumanMessage(selected.id, session.id, text, cycleKey);
+    if (res?.error) setMessages((prev) => prev.filter((m) => m.id !== tmpId));
   }
 
   async function handleSaveNote(value: string) {
@@ -483,7 +542,7 @@ export default function MentorClient({
               </div>
               <div className="flex-1 min-h-0 flex flex-col gap-3">
                 <div className="flex-1 min-h-0">
-                  <StudentSummaryPanel summary={studentSummary} loading={dataLoading} />
+                  <StudentSummaryPanel summary={studentSummary} loading={dataLoading} passageContent={passage?.content ?? ''} />
                 </div>
                 <button
                   onClick={handleToggleComplete}

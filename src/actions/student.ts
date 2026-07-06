@@ -180,6 +180,13 @@ export async function startDASession(
 ): Promise<{ state: DASessionState; openingUtterance?: string; error?: string }> {
   const supabase = createServerClient();
 
+  // Idempotency guard: if a session was already generated (pre-generated during the
+  // comprehension phase, or by a prior visit), reuse it instead of re-running the
+  // Assessor pipeline. This prevents a reconnect from overwriting the existing
+  // evaluation (and its saved chat history) with a freshly-diagnosed one.
+  const existing = await getDASessionState(studentId, phase);
+  if (existing) return { state: existing };
+
   const [apiRes, prompts] = await Promise.all([
     supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
     loadPromptAssets(supabase),
@@ -187,15 +194,15 @@ export async function startDASession(
   if (!apiRes.data) return { state: createInitialState(), error: 'API 설정이 없습니다.' };
 
   try {
-    const { state, assessorOutputsAll, verifierNotesAll } = await initDASession(
+    // initDASession now also returns the opening utterance (generated in parallel with
+    // the verifier), so we no longer make a separate generateOpeningMessage call here.
+    const { state, assessorOutputsAll, verifierNotesAll, openingUtterance } = await initDASession(
       summary, passageContent, prompts, apiRes.data
     );
     await saveDASessionState(supabase, studentId, phase, state, { assessorOutputsAll, verifierNotesAll });
 
-    // Generate and save the opening Mediator utterance
-    const openingUtterance = await generateOpeningMessage(state, prompts, apiRes.data);
     await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'assistant', content: openingUtterance },
+      { student_id: studentId, phase, role: 'assistant', content: openingUtterance, item_idx: state.current_item_idx },
     ]);
 
     return { state, openingUtterance };
@@ -262,10 +269,11 @@ export async function sendDAMessage(
   try {
     const result = await processTurn(effectiveState, studentMessage, summary, passageContent, prompts, apiRes.data);
 
+    const msgItemIdx = itemIdx ?? currentState.current_item_idx;
     await saveDASessionState(supabase, studentId, phase, result.updated_state);
     await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'user', content: studentMessage },
-      { student_id: studentId, phase, role: 'assistant', content: result.utterance },
+      { student_id: studentId, phase, role: 'user', content: studentMessage, item_idx: msgItemIdx },
+      { student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: msgItemIdx },
     ]);
 
     return result;
@@ -313,7 +321,7 @@ export async function generateItemOpening(
   try {
     const utterance = await generateOpeningMessage(effectiveState, prompts, apiRes.data);
     await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'assistant', content: utterance },
+      { student_id: studentId, phase, role: 'assistant', content: utterance, item_idx: itemIdx },
     ]);
     return { utterance };
   } catch (e) {
@@ -343,7 +351,7 @@ export async function advanceDATab(
   try {
     const openingUtterance = await generateOpeningMessage(nextState, prompts, apiRes.data);
     await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'assistant', content: openingUtterance },
+      { student_id: studentId, phase, role: 'assistant', content: openingUtterance, item_idx: nextState.current_item_idx },
     ]);
     return { state: nextState, openingUtterance };
   } catch (e) {

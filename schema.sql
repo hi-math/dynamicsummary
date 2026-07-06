@@ -11,11 +11,13 @@ CREATE TABLE IF NOT EXISTS users (
   team TEXT CHECK (team IN ('chatbot', 'human')),
   mentor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   current_phase TEXT NOT NULL DEFAULT 'cycle1_draft',
+  sort_order INTEGER,          -- manual display order in the admin account list (drag to reorder)
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Migration (기존 DB에 컬럼 추가 시):
 -- ALTER TABLE users ADD COLUMN IF NOT EXISTS mentor_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sort_order INTEGER;
 
 -- API settings (single row, id = 1)
 CREATE TABLE IF NOT EXISTS api_settings (
@@ -103,14 +105,20 @@ CREATE TABLE IF NOT EXISTS session_data (
 );
 
 -- AI chat messages (chatbot team)
+-- item_idx: which DA task (index into da_session_state.priority_queue) this message
+-- belongs to, so the per-task chat tabs can be restored correctly on reconnect.
 CREATE TABLE IF NOT EXISTS ai_messages (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   phase TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   content TEXT NOT NULL,
+  item_idx INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration for existing databases (safe to run repeatedly):
+ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS item_idx INTEGER NOT NULL DEFAULT 0;
 
 -- Human chat messages (human team — mentor ↔ student)
 CREATE TABLE IF NOT EXISTS human_messages (

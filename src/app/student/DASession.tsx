@@ -1,22 +1,32 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useToast } from '@/components/ui/Toast';
 import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import SummaryPanel from '@/components/panels/SummaryPanel';
 import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
 import {
-  submitDraft, saveNotes, saveSummary, studentAdvancePhase,
+  submitDraft, saveNotes, saveSummary, getCurrentUser,
   startDASession, sendDAMessage, advanceDATab,
 } from '@/actions/student';
-import { sendHumanMessage, getHumanMessages, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
+import { sendHumanMessage, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
 import { cycleKeyFromPhase } from '@/lib/phases';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
 
 type LocalMsg = { role: 'user' | 'assistant'; content: string; id: string };
+
+// Merge freshly-polled server rows with any optimistic (tmp_) messages that the server
+// hasn't confirmed yet, so an in-flight poll can't momentarily wipe a just-sent message.
+function mergePending(serverRows: HumanMessage[], prev: HumanMessage[]): HumanMessage[] {
+  const stillPending = prev.filter(
+    (m) => m.id.startsWith('tmp_') && !serverRows.some((s) => s.sender_id === m.sender_id && s.content === m.content),
+  );
+  return [...serverRows, ...stillPending];
+}
 
 // ─── Isolated chat input bar ────────────────────────────────────────────────────
 // Keeps its text in local state so typing never re-renders the heavy DASession tree
@@ -101,12 +111,12 @@ export default function DASession({
   mentorName?: string;
 }) {
   const { showToast } = useToast();
+  const router = useRouter();
   const isChatbot = session.team === 'chatbot';
 
   // DA starts automatically on entry — the summary was already finalized in the draft stage,
   // so there is no separate submit step here.
   const submitted = true;
-  const [advancing, setAdvancing] = useState(false);
   // Human team: mentor must mark "학습 완료" before the student can advance.
   const [learningCompleted, setLearningCompleted] = useState(!!sessionData?.learning_completed);
   const [daState, setDaState] = useState<DASessionState | null>(initialDAState ?? null);
@@ -114,12 +124,18 @@ export default function DASession({
   const initialSummary = draftSummary ?? sessionData?.summary ?? '';
   const [currentSummary, setCurrentSummary] = useState(initialSummary);
 
-  // Per-item chat messages (chatbot only)
+  // Per-item chat messages (chatbot only).
+  // Restore saved history into the correct task tab using each message's item_idx
+  // (messages are stored per-phase with an item_idx pointing into priority_queue).
   const [messagesPerItem, setMessagesPerItem] = useState<Record<string, LocalMsg[]>>(() => {
     const initial: Record<string, LocalMsg[]> = {};
-    const firstItem = initialDAState?.priority_queue?.[0];
-    if (firstItem && aiMessages.length > 0) {
-      initial[firstItem] = aiMessages.map((m) => ({ role: m.role, content: m.content, id: m.id }));
+    const queue = initialDAState?.priority_queue;
+    if (queue && aiMessages.length > 0) {
+      for (const m of aiMessages) {
+        const key = queue[m.item_idx ?? 0];
+        if (!key) continue;
+        (initial[key] ??= []).push({ role: m.role, content: m.content, id: m.id });
+      }
     }
     return initial;
   });
@@ -149,6 +165,7 @@ export default function DASession({
   // Chat loading & error (input text lives inside <ChatInputBar/> local state)
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [daInitError, setDaInitError] = useState('');
   const bottomRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const daInitRef = useRef(false);
@@ -157,10 +174,51 @@ export default function DASession({
   const [humanMsgs, setHumanMsgs] = useState(humanMessages);
   const [mentorOnline, setMentorOnline] = useState(false);
 
+  // Human team: allow collapsing the chat panel to widen the reading/summary area
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+
+  // Resizable bottom row (Reference Tools / Notes) height in px. Dragging the
+  // divider grows/shrinks the passage & summary area above it.
+  const [bottomHeight, setBottomHeight] = useState(208); // h-52
+  const mainAreaRef = useRef<HTMLDivElement>(null);
+
+  function handleResizeStart(e: React.PointerEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = bottomHeight;
+    function onMove(ev: PointerEvent) {
+      const containerH = mainAreaRef.current?.clientHeight ?? 800;
+      // Drag up (negative delta) → taller bottom; drag down → shorter bottom.
+      const next = startHeight - (ev.clientY - startY);
+      const max = containerH - 160; // keep at least ~160px for passage/summary
+      setBottomHeight(Math.max(120, Math.min(max, next)));
+    }
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    }
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
   const tabs = daState?.priority_queue ?? [];
   const allResolved = tabs.length > 0 && tabs.every((k) => daState?.resolutions[k]);
   const currentItemKey = tabs[daState?.current_item_idx ?? 0] ?? null;
   const activeItemKey = tabs[activeTabIdx] ?? null;
+
+  // DA is finished when all chatbot tasks are resolved / the mentor marked human learning complete.
+  // At that point the student sees a waiting screen and the admin decides when to advance the cycle.
+  const daComplete = isChatbot ? allResolved : learningCompleted;
+
+  // While waiting, poll the student's phase; when the admin advances it, re-render the page.
+  useEffect(() => {
+    if (!daComplete) return;
+    const interval = setInterval(async () => {
+      const u = await getCurrentUser(session.id);
+      if (u && u.current_phase !== phase) router.refresh();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [daComplete, phase, session.id, router]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -170,23 +228,32 @@ export default function DASession({
     bottomRefs.current['human']?.scrollIntoView({ behavior: 'smooth' });
   }, [messagesPerItem, activeItemKey, humanMsgs]);
 
+  // Runs the Assessor pipeline (or adopts a pre-generated session). Surfaces failures
+  // so the panel can show an error + retry instead of spinning forever.
+  async function runDAInit() {
+    const assessmentSummary = draftSummary || currentSummary;
+    if (!assessmentSummary) { setDaInitError('요약문이 없어 평가를 시작할 수 없습니다. 관리자에게 문의해주세요.'); return; }
+    setDaInitError('');
+    setChatLoading(true);
+    const res = await startDASession(session.id, phase, assessmentSummary, passage.content);
+    setChatLoading(false);
+    if (res.error) { setDaInitError(res.error); return; }
+    setDaState(res.state);
+    setActiveTabIdx(0);
+    if (res.openingUtterance && res.state.priority_queue[0]) {
+      const key = res.state.priority_queue[0];
+      setMessagesPerItem({ [key]: [{ role: 'assistant', content: res.openingUtterance, id: String(Date.now()) }] });
+    }
+  }
+
   // Auto-start DA on entry (chatbot). Uses the pre-generated state if present
   // (built during the comprehension phase); otherwise runs the Assessor pipeline now.
   useEffect(() => {
+    if (!isChatbot || daState || daInitRef.current) return;
     const assessmentSummary = draftSummary || currentSummary;
-    if (!isChatbot || daState || daInitRef.current || !assessmentSummary) return;
+    if (!assessmentSummary) return;
     daInitRef.current = true;
-    setChatLoading(true);
-    startDASession(session.id, phase, assessmentSummary, passage.content).then((res) => {
-      setChatLoading(false);
-      if (res.error) { setChatError(res.error); return; }
-      setDaState(res.state);
-      setActiveTabIdx(0);
-      if (res.openingUtterance && res.state.priority_queue[0]) {
-        const key = res.state.priority_queue[0];
-        setMessagesPerItem({ [key]: [{ role: 'assistant', content: res.openingUtterance, id: String(Date.now()) }] });
-      }
-    });
+    runDAInit();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -204,12 +271,19 @@ export default function DASession({
   const cycleNum = cycleKey.replace('cycle', '');
   useEffect(() => {
     if (isChatbot) return;
-    pollRef.current = setInterval(async () => {
-      const fresh = await getHumanMessages(session.id, cycleKey);
-      setHumanMsgs(fresh);
-    }, 1800);
+    async function poll() {
+      const res = await fetch(
+        `/api/human-messages?studentId=${encodeURIComponent(session.id)}&cycleKey=${encodeURIComponent(cycleKey)}`,
+        { cache: 'no-store' },
+      );
+      if (res.ok) {
+        const rows = (await res.json()) as HumanMessage[];
+        setHumanMsgs((prev) => mergePending(rows, prev));
+      }
+    }
+    pollRef.current = setInterval(poll, 1200);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [session.id, isChatbot]);
+  }, [session.id, isChatbot, cycleKey]);
 
   // Human team: poll mentor's learning-completion approval to enable the advance button
   useEffect(() => {
@@ -289,6 +363,11 @@ export default function DASession({
         ],
       }));
 
+      // Reply is on screen — drop the "입력 중..." indicator now. The next-tab opening
+      // below (advanceDATab) is prep work for a still-locked tab, so it must not keep
+      // the current turn looking like it's still waiting.
+      setChatLoading(false);
+
       if (res.tab_unlocked && !res.session_complete) {
         // Item resolved — advance DB state and pre-generate next tab opening,
         // but do NOT auto-switch; let student read the final message first
@@ -318,20 +397,23 @@ export default function DASession({
   }
 
   async function handleHumanSend(text: string) {
-    if (!text.trim() || chatLoading) return;
-    setChatLoading(true);
-    await sendHumanMessage(session.id, session.id, text, cycleKey);
-    const fresh = await getHumanMessages(session.id, cycleKey);
-    setHumanMsgs(fresh);
-    setChatLoading(false);
-  }
-
-  async function handleAdvance() {
-    setAdvancing(true);
-    const res = await studentAdvancePhase(session.id);
-    setAdvancing(false);
-    if (res?.error) { showToast(res.error, 'error'); return; }
-    showToast(`사이클 ${cycleNum}이 종료되었습니다. 수고하셨습니다.`, 'success');
+    if (!text.trim()) return;
+    // Optimistic: show my message immediately. The next poll reconciles it with the
+    // persisted row, so we don't block on the send + refetch round trip.
+    const tmpId = `tmp_${Date.now()}`;
+    const optimistic: HumanMessage = {
+      id: tmpId,
+      student_id: session.id,
+      sender_id: session.id,
+      content: text,
+      created_at: new Date().toISOString(),
+    };
+    setHumanMsgs((prev) => [...prev, optimistic]);
+    const res = await sendHumanMessage(session.id, session.id, text, cycleKey);
+    if (res?.error) {
+      setHumanMsgs((prev) => prev.filter((m) => m.id !== tmpId));
+      setChatError(res.error);
+    }
   }
 
   async function handleSummaryBlur(value: string) {
@@ -346,6 +428,29 @@ export default function DASession({
   // ─── Right panel ─────────────────────────────────────────────────────────────
 
   function renderChatbotPanel() {
+    // Init failed (e.g. AI provider quota/rate limit) — show the error and let the
+    // student retry, instead of spinning forever with the failure hidden.
+    if (!daState && daInitError) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center bg-white border border-slate-200 rounded-lg p-6 gap-3 text-center">
+          <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+            <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M12 3l9 16H3l9-16z" />
+            </svg>
+          </div>
+          <p className="text-sm font-medium text-slate-700">평가를 시작하지 못했습니다</p>
+          <p className="text-xs text-slate-400 break-words max-w-full">{daInitError}</p>
+          <button
+            onClick={runDAInit}
+            disabled={chatLoading}
+            className="mt-1 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {chatLoading ? '재시도 중...' : '다시 시도'}
+          </button>
+        </div>
+      );
+    }
+
     // DA not ready yet (pipeline still running)
     if (!daState || tabs.length === 0) {
       return (
@@ -447,6 +552,15 @@ export default function DASession({
         <div className="px-3 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-sm font-semibold text-slate-700">{mentorLabel}</span>
+            <button
+              onClick={() => setChatCollapsed(true)}
+              title="채팅 접기"
+              className="text-slate-400 hover:text-slate-700 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-xs text-emerald-600">
@@ -509,12 +623,38 @@ export default function DASession({
     );
   }
 
+  // ─── Waiting screen ──────────────────────────────────────────────────────────
+  // Shown once the DA is finished. The student cannot advance themselves; they wait
+  // here until the admin moves them to the next cycle (this component then re-renders).
+  if (daComplete) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-8 gap-5 text-center">
+        <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center">
+          <svg className="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 mb-1.5">사이클 {cycleNum} 동적평가를 완료했습니다</h2>
+          <p className="text-sm text-slate-500 leading-relaxed">
+            수고하셨습니다. 관리자가 다음 단계로 안내할 때까지<br />
+            이 화면에서 잠시 기다려 주세요.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+          <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+          다음 단계 대기 중...
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col p-3 gap-3 min-h-0">
       {/* Main area */}
-      <div className="flex-1 flex gap-3 min-h-0">
-        {/* Left: 4 panels (passage 33% + summary 33% = 76%) */}
-        <div className="basis-[76%] min-w-0 flex flex-col gap-3 min-h-0">
+      <div ref={mainAreaRef} className="flex-1 flex gap-3 min-h-0">
+        {/* Left: 4 panels (passage + summary on top, reference + notes below) */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <div className="flex gap-3 min-h-0 flex-1">
             <div className="flex-1 min-h-0">
               <ReadingPassagePanel title={passage.title} content={passage.content} />
@@ -531,7 +671,17 @@ export default function DASession({
               />
             </div>
           </div>
-          <div className="flex gap-3 shrink-0 h-52">
+
+          {/* Vertical resize handle — drag up/down to resize passage & summary */}
+          <div
+            onPointerDown={handleResizeStart}
+            title="위아래로 드래그하여 크기 조절"
+            className="group shrink-0 h-3 my-1 flex items-center justify-center cursor-row-resize"
+          >
+            <div className="w-16 h-1 rounded-full bg-slate-300 group-hover:bg-indigo-400 transition-colors" />
+          </div>
+
+          <div className="flex gap-3 shrink-0" style={{ height: bottomHeight }}>
             <div className="flex-1 min-h-0"><ReferenceToolsPanel /></div>
             <div className="flex-1 min-h-0">
               <NotesPanel initialValue={sessionData?.notes ?? ''} onBlur={handleNotesBlur} />
@@ -539,28 +689,27 @@ export default function DASession({
           </div>
         </div>
 
-        {/* Right: chatbot or human panel (24%) */}
-        <div className="basis-[24%] min-w-0 shrink-0">
-          {isChatbot ? renderChatbotPanel() : renderHumanPanel()}
-        </div>
-      </div>
-
-      {/* Bottom advance button */}
-      <div className="shrink-0 flex justify-end">
-        <button
-          onClick={handleAdvance}
-          disabled={advancing || (isChatbot ? !allResolved : !learningCompleted)}
-          title={!isChatbot && !learningCompleted ? '멘토가 학습 완료를 승인하면 활성화됩니다.' : undefined}
-          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
-        >
-          {advancing && (
-            <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-            </svg>
-          )}
-          {advancing ? '처리 중...' : `사이클 ${cycleNum} 종료`}
-        </button>
+        {/* Right: chatbot or human panel */}
+        {!isChatbot && chatCollapsed ? (
+          <div className="shrink-0 flex flex-col items-center gap-2 pt-1">
+            <button
+              onClick={() => setChatCollapsed(false)}
+              title="채팅 열기"
+              className="flex flex-col items-center gap-2 px-2 py-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors h-full"
+            >
+              <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <span className="text-xs text-slate-500 [writing-mode:vertical-rl]">채팅 열기</span>
+              {mentorOnline && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+            </button>
+          </div>
+        ) : (
+          <div className="basis-[24%] min-w-0 shrink-0">
+            {isChatbot ? renderChatbotPanel() : renderHumanPanel()}
+          </div>
+        )}
       </div>
     </div>
   );

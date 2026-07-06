@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react';
 import Modal from '@/components/ui/Modal';
 import Badge, { RoleBadge, TeamBadge } from '@/components/ui/Badge';
 import { useToast } from '@/components/ui/Toast';
-import { createUser, updateUser, deleteUser, advancePhase, setPhase, getUsers, assignMentor } from '@/actions/admin';
+import { createUser, updateUser, deleteUser, advancePhase, setPhase, getUsers, assignMentor, reorderUsers } from '@/actions/admin';
 import { PHASES, PHASE_LABEL } from '@/lib/phases';
 import type { User } from '@/types';
 
@@ -19,6 +19,8 @@ export default function UsersTab({ initialUsers, initialMentors }: { initialUser
   const [assignUser, setAssignUser] = useState<User | null>(null);
   const [selectedMentorId, setSelectedMentorId] = useState<string>('');
   const [createOpen, setCreateOpen] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   async function refresh() {
     const fresh = await getUsers();
@@ -83,6 +85,35 @@ export default function UsersTab({ initialUsers, initialMentors }: { initialUser
     await refresh();
   }
 
+  function handleDragStart(index: number) {
+    setDragIndex(index);
+  }
+
+  function handleDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault(); // allow drop
+    if (index !== dragOverIndex) setDragOverIndex(index);
+  }
+
+  async function handleDrop(index: number) {
+    const from = dragIndex;
+    setDragIndex(null);
+    setDragOverIndex(null);
+    if (from === null || from === index) return;
+
+    const reordered = [...users];
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(index, 0, moved);
+    setUsers(reordered); // optimistic
+
+    const res = await reorderUsers(reordered.map((u) => u.id));
+    if (res?.error) { showToast(res.error, 'error'); await refresh(); return; }
+  }
+
+  function handleDragEnd() {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -104,14 +135,31 @@ export default function UsersTab({ initialUsers, initialMentors }: { initialUser
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
+                <th className="w-8 px-2 py-2.5" />
                 {['아이디', '이름', '역할', '팀', '담당 멘토', '현재 단계', '단계설정', '관리'].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-600">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {users.map((u) => (
-                <tr key={u.id} className="hover:bg-slate-50">
+              {users.map((u, index) => (
+                <tr
+                  key={u.id}
+                  draggable
+                  onDragStart={() => handleDragStart(index)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDrop={() => handleDrop(index)}
+                  onDragEnd={handleDragEnd}
+                  className={`hover:bg-slate-50 transition-colors ${
+                    dragIndex === index ? 'opacity-40' : ''
+                  } ${dragOverIndex === index && dragIndex !== index ? 'border-t-2 border-indigo-400' : ''}`}
+                >
+                  <td className="w-8 px-2 py-2.5 text-center cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 select-none"
+                    title="드래그하여 순서 변경">
+                    <svg className="w-4 h-4 inline-block" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M7 4a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zM7 14a1 1 0 100 2 1 1 0 000-2zM13 4a1 1 0 100 2 1 1 0 000-2zM13 9a1 1 0 100 2 1 1 0 000-2zM13 14a1 1 0 100 2 1 1 0 000-2z" />
+                    </svg>
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{u.id}</td>
                   <td className="px-4 py-2.5 font-medium">{u.name}</td>
                   <td className="px-4 py-2.5"><RoleBadge role={u.role} /></td>
@@ -165,7 +213,7 @@ export default function UsersTab({ initialUsers, initialMentors }: { initialUser
                 </tr>
               ))}
               {users.length === 0 && (
-                <tr><td colSpan={8} className="text-center py-8 text-slate-400 text-sm">계정이 없습니다.</td></tr>
+                <tr><td colSpan={9} className="text-center py-8 text-slate-400 text-sm">계정이 없습니다.</td></tr>
               )}
             </tbody>
           </table>

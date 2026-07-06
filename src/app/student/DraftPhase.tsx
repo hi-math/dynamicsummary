@@ -63,6 +63,7 @@ export default function DraftPhase({
             submitted={submitted}
             submitting={false}
             hideSubmit={true}
+            passageContent={passage.content}
           />
         </div>
       </div>
