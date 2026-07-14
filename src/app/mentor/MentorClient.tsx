@@ -5,7 +5,6 @@ import {
   sendHumanMessage, getMentorStudents,
   updatePresence, getPresenceBatch, getStudentSummary, getCyclePassage,
   getMentorNote, saveMentorNote, getLearningComplete, setLearningComplete,
-  setTyping, getTyping,
 } from '@/actions/mentor';
 import { isDAPhase, cycleKeyFromPhase, PHASE_LABEL, PHASE_GROUPS } from '@/lib/phases';
 import { computeHighlightPair } from '@/lib/highlight';
@@ -168,19 +167,6 @@ function MentorNotesPanel({
   );
 }
 
-// ─── Typing indicator bubble (three waving dots) ────────────────────────────────
-function TypingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="bg-slate-100 px-3.5 py-3 rounded-lg flex items-center gap-1">
-        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" />
-      </div>
-    </div>
-  );
-}
-
 // ─── Chat panel ───────────────────────────────────────────────────────────────
 
 function ChatPanelMentor({
@@ -198,28 +184,7 @@ function ChatPanelMentor({
 }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [studentTyping, setStudentTyping] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const typingActive = input.length > 0;
-
-  // Broadcast my own typing state (heartbeat while I have text, clear when I stop).
-  useEffect(() => {
-    if (!typingActive) { setTyping(session.id, false); return; }
-    setTyping(session.id, true);
-    const iv = setInterval(() => setTyping(session.id, true), 2000);
-    return () => { clearInterval(iv); setTyping(session.id, false); };
-  }, [typingActive, session.id]);
-
-  // Poll the selected student's typing state (typing if refreshed < 4s ago).
-  useEffect(() => {
-    async function check() {
-      const ts = await getTyping(selected.id);
-      setStudentTyping(!!ts && Date.now() - new Date(ts).getTime() < 4000);
-    }
-    check();
-    const iv = setInterval(check, 1500);
-    return () => clearInterval(iv);
-  }, [selected.id]);
 
   // Chat scroll management: keep the user's position when scrolled up, and show a
   // "맨 아래 보기" jump button when new messages arrive while scrolled up.
@@ -254,7 +219,7 @@ function ChatPanelMentor({
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [messages, studentTyping]);
+  }, [messages]);
 
   async function handleSend() {
     const text = input.trim();
@@ -318,7 +283,6 @@ function ChatPanelMentor({
               </div>
             );
           })}
-          {studentTyping && <TypingIndicator />}
         </div>
         {showJump && (
           <button

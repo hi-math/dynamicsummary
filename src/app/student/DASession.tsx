@@ -11,7 +11,7 @@ import {
   submitDraft, saveStudentNote, saveSummary, getCurrentUser,
   startDASession, sendDAMessage, advanceDATab, studentAdvancePhase,
 } from '@/actions/student';
-import { sendHumanMessage, updatePresence, getPresence, getLearningComplete, setTyping, getTyping } from '@/actions/mentor';
+import { sendHumanMessage, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
 import { cycleKeyFromPhase } from '@/lib/phases';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
@@ -36,13 +36,11 @@ function ChatInputBar({
   loading,
   placeholder,
   disabled = false,
-  onTyping,
 }: {
   onSend: (text: string) => void | Promise<void>;
   loading: boolean;
   placeholder: string;
   disabled?: boolean;
-  onTyping?: (typing: boolean) => void;
 }) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -51,7 +49,6 @@ function ChatInputBar({
     const t = text.trim();
     if (!t || loading || disabled) return;
     setText('');
-    onTyping?.(false);
     await onSend(t);
     requestAnimationFrame(() => ref.current?.focus());
   }
@@ -62,7 +59,7 @@ function ChatInputBar({
         ref={ref}
         rows={2}
         value={text}
-        onChange={(e) => { setText(e.target.value); onTyping?.(e.target.value.length > 0); }}
+        onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
         placeholder={placeholder}
         disabled={disabled}
@@ -102,21 +99,6 @@ function JumpToBottomButton({ onClick }: { onClick: () => void }) {
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
       </svg>
     </button>
-  );
-}
-
-// ─── Typing indicator bubble ────────────────────────────────────────────────────
-// Incoming-style bubble with three dots waving (staggered bounce). Shown while the
-// other party has text in their input.
-function TypingIndicator() {
-  return (
-    <div className="flex justify-start mb-2">
-      <div className="bg-slate-100 px-3.5 py-3 rounded-lg flex items-center gap-1">
-        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" />
-      </div>
-    </div>
   );
 }
 
@@ -228,9 +210,6 @@ export default function DASession({
   // Human messages state (human team)
   const [humanMsgs, setHumanMsgs] = useState(humanMessages);
   const [mentorOnline, setMentorOnline] = useState(false);
-  // Typing indicators (human team): my own (heartbeat to server) and the mentor's (polled).
-  const [localTyping, setLocalTyping] = useState(false);
-  const [mentorTyping, setMentorTyping] = useState(false);
 
   // Human team: mentor's "학습 완료" flag. When true, the chat is closed with a
   // system notice and the "사이클 종료" button below becomes enabled.
@@ -304,7 +283,7 @@ export default function DASession({
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [messagesPerItem, humanMsgs, mentorTyping, chatLoading]);
+  }, [messagesPerItem, humanMsgs, chatLoading]);
 
   // Tab switch (chatbot) — always jump to the bottom of the newly shown conversation.
   useEffect(() => {
@@ -385,29 +364,6 @@ export default function DASession({
     const interval = setInterval(checkLearning, 3000);
     return () => clearInterval(interval);
   }, [session.id, phase, isChatbot]);
-
-  // Human team: broadcast my own typing state. While I have text in the input, refresh
-  // the typing_at heartbeat every 2s; clear it when I stop.
-  useEffect(() => {
-    if (isChatbot) return;
-    if (!localTyping) { setTyping(session.id, false); return; }
-    setTyping(session.id, true);
-    const interval = setInterval(() => setTyping(session.id, true), 2000);
-    return () => { clearInterval(interval); setTyping(session.id, false); };
-  }, [localTyping, isChatbot, session.id]);
-
-  // Human team: poll the mentor's typing state (treat as typing if refreshed < 4s ago).
-  useEffect(() => {
-    if (isChatbot || !mentorId) return;
-    async function checkTyping() {
-      if (!mentorId) return;
-      const ts = await getTyping(mentorId);
-      setMentorTyping(!!ts && Date.now() - new Date(ts).getTime() < 4000);
-    }
-    checkTyping();
-    const interval = setInterval(checkTyping, 1500);
-    return () => clearInterval(interval);
-  }, [isChatbot, mentorId]);
 
   // Own heartbeat — update our presence every 15s
   useEffect(() => {
@@ -751,7 +707,6 @@ export default function DASession({
                 </div>
               </div>
             )}
-            {mentorTyping && !learningCompleted && <TypingIndicator />}
           </div>
           {showJump && <JumpToBottomButton onClick={scrollChatToBottom} />}
         </div>
@@ -761,7 +716,6 @@ export default function DASession({
           onSend={handleHumanSend}
           loading={chatLoading}
           disabled={!chatEnabled || learningCompleted}
-          onTyping={setLocalTyping}
           placeholder={learningCompleted ? '대화가 종료되었습니다.' : chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
         />
       </div>
