@@ -23,6 +23,14 @@ function buildDescriptorBlock(): string {
     .join('\n\n');
 }
 
+// ─── Global system prompt (과제 전체 설명) ────────────────────────────────────
+// admin의 `prompt_system` 값을 모든 노드의 시스템 프롬프트 맨 앞에 공통으로 주입한다.
+// 비어 있으면 노드 프롬프트를 그대로 사용한다.
+function prependSystem(prompts: Record<string, string>, sysPrompt: string): string {
+  const overview = prompts['prompt_system']?.trim();
+  return overview ? `${overview}\n\n---\n\n${sysPrompt}` : sysPrompt;
+}
+
 // ─── Priority queue calculation ───────────────────────────────────────────────
 
 export function calculatePriorityQueue(assessorOutput: AssessorOutput): string[] {
@@ -86,12 +94,12 @@ export function resetItemState(state: DASessionState): DASessionState {
 export async function runAssessor(
   summary: string,
   passageContent: string,
-  systemPrompt: string,
+  prompts: Record<string, string>,
   api: APISettings,
 ): Promise<AssessorOutput> {
   const descriptorBlock = buildDescriptorBlock();
 
-  const sysPrompt = systemPrompt || `You are an Assessor in a Dynamic Assessment tutoring system for EFL summary writing.
+  const sysPrompt = prompts['prompt_assessor'] || `You are an Assessor in a Dynamic Assessment tutoring system for EFL summary writing.
 Diagnose the student's summary against the 6 evaluation areas and 19 descriptors listed below.
 
 CRITICAL: Your entire response must be a single JSON object whose FIRST and ONLY top-level key is "items".
@@ -124,7 +132,7 @@ ${descriptorBlock}`;
 
   const userInput = `[PASSAGE]\n${passageContent}\n\n[STUDENT SUMMARY]\n${summary}`;
 
-  const raw = await callLLMNode(sysPrompt, userInput, api);
+  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
   if (!json) throw new Error(`Assessor returned non-JSON output: ${raw.slice(0, 200)}`);
   const parsed = JSON.parse(json);
@@ -151,11 +159,11 @@ export async function runAssessorVerifier(
   assessorOutput: AssessorOutput,
   summary: string,
   passageContent: string,
-  systemPrompt: string,
+  prompts: Record<string, string>,
   api: APISettings,
   previousNotes?: string,
 ): Promise<VerifierResult> {
-  const sysPrompt = systemPrompt || `You are an Assessor Verifier (LLM-as-a-judge) in a DA tutoring system.
+  const sysPrompt = prompts['prompt_assessor_verifier'] || `You are an Assessor Verifier (LLM-as-a-judge) in a DA tutoring system.
 Review the Assessor's diagnosis for:
 1. Evidence validity — does each detected descriptor have clear, specific textual evidence?
 2. Item selection appropriateness — are the selected items truly present in the student's text?
@@ -166,7 +174,7 @@ Respond ONLY with valid JSON:
 
   const userInput = `[PASSAGE]\n${passageContent}\n\n[STUDENT SUMMARY]\n${summary}\n\n[ASSESSOR OUTPUT]\n${JSON.stringify(assessorOutput, null, 2)}${previousNotes ? `\n\n[PREVIOUS VERIFICATION NOTES]\n${previousNotes}` : ''}`;
 
-  const raw = await callLLMNode(sysPrompt, userInput, api);
+  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
   if (!json) return { pass: true, notes: 'parse error — defaulting to pass' };
   return JSON.parse(json) as VerifierResult;
@@ -205,7 +213,7 @@ export async function initDASession(
   const verifierNotesAll: string[] = [];
 
   // 1st Assessor
-  const assessor1 = await runAssessor(summary, passageContent, prompts['prompt_assessor'] ?? '', api);
+  const assessor1 = await runAssessor(summary, passageContent, prompts, api);
   assessorOutputsAll.push(assessor1);
 
   // Speculatively generate the opening message from assessor1 IN PARALLEL with the
@@ -216,7 +224,7 @@ export async function initDASession(
   const openingPromise = generateOpeningMessage(speculativeState, prompts, api).catch(() => null);
 
   // 1st Verifier (runs concurrently with the speculative opening above)
-  const verifier1 = await runAssessorVerifier(assessor1, summary, passageContent, prompts['prompt_assessor_verifier'] ?? '', api);
+  const verifier1 = await runAssessorVerifier(assessor1, summary, passageContent, prompts, api);
   verifierNotesAll.push(verifier1.notes);
 
   let finalOutput: AssessorOutput;
@@ -227,11 +235,11 @@ export async function initDASession(
     confidence = 'high';
   } else {
     // 2nd Assessor (with verifier notes as extra context)
-    const assessor2 = await runAssessor(summary + `\n\n[Verifier notes: ${verifier1.notes}]`, passageContent, prompts['prompt_assessor'] ?? '', api);
+    const assessor2 = await runAssessor(summary + `\n\n[Verifier notes: ${verifier1.notes}]`, passageContent, prompts, api);
     assessorOutputsAll.push(assessor2);
 
     // 2nd Verifier
-    const verifier2 = await runAssessorVerifier(assessor2, summary, passageContent, prompts['prompt_assessor_verifier'] ?? '', api, verifier1.notes);
+    const verifier2 = await runAssessorVerifier(assessor2, summary, passageContent, prompts, api, verifier1.notes);
     verifierNotesAll.push(verifier2.notes);
 
     if (verifier2.pass) {
@@ -302,7 +310,7 @@ Respond ONLY with valid JSON:
     assessor_evidence: state.assessor_output?.items[currentItem] ?? null,
   });
 
-  const raw = await callLLMNode(sysPrompt, userInput, api);
+  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
   if (!json) {
     return { classification: 'on_track', identification_success: false, remedial_verbalization_success: false };
@@ -334,7 +342,7 @@ Respond ONLY with a plain text explanation guidance (no JSON).`;
     assessor_evidence: state.assessor_output?.items[currentItem] ?? null,
   });
 
-  return await callLLMNode(sysPrompt, userInput, api);
+  return await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
 }
 
 async function runDeflector(
@@ -357,7 +365,7 @@ Generate a brief tutor response (1-2 sentences). Respond with plain text only (n
     student_message: studentMessage,
   });
 
-  return await callLLMNode(sysPrompt, userInput, api);
+  return await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
 }
 
 async function runMediator(
@@ -399,22 +407,23 @@ Maintain a single, consistent tutor persona. Do NOT reveal internal node decisio
     tabs_remaining: state.priority_queue.length - 1 - state.current_item_idx,
   });
 
-  return await callLLMNode(sysPrompt, userInput, api);
+  return await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
 }
 
 // ─── Confirmation classifier (used when item_resolution_pending = true) ──────
 
 async function runConfirmationClassifier(
   studentMessage: string,
+  prompts: Record<string, string>,
   api: APISettings,
 ): Promise<boolean> {
-  const sysPrompt = `You are a classifier. The tutor just asked the student if they want to move on to the next task.
+  const sysPrompt = prompts['prompt_confirmation'] || `You are a classifier. The tutor just asked the student if they want to move on to the next task.
 Determine if the student's response is a CONFIRMATION (positive/agreeable) or NOT.
 Respond ONLY with valid JSON: { "confirming": true | false }
 Confirming examples: "네", "응", "갑시다", "넘어가요", "그래요", "알겠어요", "yes", "sure", "okay", "ok", "넘어가겠습니다"
 NOT confirming examples: "아니요", "잠깐만요", "궁금한 게 있어요", "no", "wait"`;
 
-  const raw = await callLLMNode(sysPrompt, studentMessage, api);
+  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), studentMessage, api);
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
   if (!json) return false;
   try { return JSON.parse(json).confirming === true; } catch { return false; }
@@ -447,7 +456,7 @@ export async function processTurn(
 
   // ── Resolution pending: student is responding to "다음 탭으로 넘어가볼까요?" ──
   if (state.item_resolution_pending) {
-    const confirming = await runConfirmationClassifier(studentMessage, api);
+    const confirming = await runConfirmationClassifier(studentMessage, prompts, api);
     if (confirming) {
       // Student confirmed → complete the item
       updatedState.item_resolution_pending = false;

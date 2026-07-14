@@ -153,7 +153,7 @@ export default function SummaryPanel({
     <>
       <div className="flex flex-col h-full bg-white border border-slate-200 rounded-lg overflow-hidden">
         <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-slate-700 truncate">지문을 읽고 핵심 내용을 요약하세요.</h3>
+          <h3 className="text-sm font-semibold text-slate-700 truncate">지문을 읽고 핵심 내용을 요약하세요. <span className="font-normal text-slate-400">(분량: 140-200단어)</span></h3>
           <div className="flex items-center gap-3 shrink-0">
             <span className="text-xs text-slate-400">{countWords(value)} 단어</span>
             {highlightToggle}
@@ -194,7 +194,7 @@ export default function SummaryPanel({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-slate-700 truncate">지문을 읽고 핵심 내용을 요약하세요.</h3>
+              <h3 className="text-sm font-semibold text-slate-700 truncate">지문을 읽고 핵심 내용을 요약하세요. <span className="font-normal text-slate-400">(분량: 140-200단어)</span></h3>
               <div className="flex items-center gap-3 shrink-0">
                 <span className="text-xs text-slate-400">{countWords(value)} 단어</span>
                 {highlightToggle}

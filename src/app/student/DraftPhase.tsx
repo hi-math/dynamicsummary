@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useToast } from '@/components/ui/Toast';
 import Modal from '@/components/ui/Modal';
 import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
@@ -29,6 +29,30 @@ export default function DraftPhase({
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [summaryValue, setSummaryValue] = useState(sessionData?.summary ?? '');
 
+  // Resizable bottom row (Reference Tools / Notes) height in px. Dragging the
+  // divider grows/shrinks the passage & summary area above it.
+  const [bottomHeight, setBottomHeight] = useState(208); // h-52
+  const mainAreaRef = useRef<HTMLDivElement>(null);
+
+  function handleResizeStart(e: React.PointerEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = bottomHeight;
+    function onMove(ev: PointerEvent) {
+      const containerH = mainAreaRef.current?.clientHeight ?? 800;
+      // Drag up (negative delta) → taller bottom; drag down → shorter bottom.
+      const next = startHeight - (ev.clientY - startY);
+      const max = containerH - 160; // keep at least ~160px for passage/summary
+      setBottomHeight(Math.max(120, Math.min(max, next)));
+    }
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    }
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
   async function handleSummaryBlur(value: string) {
     await saveSummary(session.id, phase, value);
   }
@@ -50,34 +74,45 @@ export default function DraftPhase({
 
   return (
     <div className="h-full flex flex-col p-3 gap-3 min-h-0">
-      {/* Top row — fills remaining space */}
-      <div className="flex gap-3 min-h-0 flex-1">
-        <div className="flex-1 min-h-0">
-          <ReadingPassagePanel title={passage.title} content={passage.content} />
+      <div ref={mainAreaRef} className="flex-1 flex flex-col min-h-0">
+        {/* Top row — fills remaining space */}
+        <div className="flex gap-3 min-h-0 flex-1">
+          <div className="flex-1 min-h-0">
+            <ReadingPassagePanel title={passage.title} content={passage.content} />
+          </div>
+          <div className="flex-1 min-h-0">
+            <SummaryPanel
+              initialValue={sessionData?.summary ?? ''}
+              onBlur={handleSummaryBlur}
+              onValueChange={setSummaryValue}
+              submitted={submitted}
+              submitting={false}
+              hideSubmit={true}
+              passageContent={passage.content}
+            />
+          </div>
         </div>
-        <div className="flex-1 min-h-0">
-          <SummaryPanel
-            initialValue={sessionData?.summary ?? ''}
-            onBlur={handleSummaryBlur}
-            onValueChange={setSummaryValue}
-            submitted={submitted}
-            submitting={false}
-            hideSubmit={true}
-            passageContent={passage.content}
-          />
-        </div>
-      </div>
 
-      {/* Bottom row — fixed height */}
-      <div className="flex gap-3 shrink-0 h-52">
-        <div className="flex-1 min-h-0">
-          <ReferenceToolsPanel />
+        {/* Vertical resize handle — drag up/down to resize passage & summary */}
+        <div
+          onPointerDown={handleResizeStart}
+          title="위아래로 드래그하여 크기 조절"
+          className="group shrink-0 h-3 my-1 flex items-center justify-center cursor-row-resize"
+        >
+          <div className="w-16 h-1 rounded-full bg-slate-300 group-hover:bg-indigo-400 transition-colors" />
         </div>
-        <div className="flex-1 min-h-0">
-          <NotesPanel
-            initialValue={sessionData?.notes ?? ''}
-            onBlur={handleNotesBlur}
-          />
+
+        {/* Bottom row — resizable height */}
+        <div className="flex gap-3 shrink-0" style={{ height: bottomHeight }}>
+          <div className="flex-1 min-h-0">
+            <ReferenceToolsPanel />
+          </div>
+          <div className="flex-1 min-h-0">
+            <NotesPanel
+              initialValue={sessionData?.notes ?? ''}
+              onBlur={handleNotesBlur}
+            />
+          </div>
         </div>
       </div>
 

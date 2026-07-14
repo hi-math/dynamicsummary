@@ -180,10 +180,13 @@ INSERT INTO comprehension_questions (cycle_key, questions)
 VALUES ('cycle1','[]'),('cycle2','[]'),('cycle3','[]'),('cycle4','[]')
 ON CONFLICT (cycle_key) DO NOTHING;
 
--- Seed 20 prompt asset slots
+-- Seed prompt asset slots
 INSERT INTO prompt_assets (key, content) VALUES
+  ('prompt_system', ''),
   ('prompt_assessor', ''),
   ('prompt_assessor_verifier', ''),
+  ('prompt_analysis', ''),
+  ('prompt_confirmation', ''),
   ('prompt_classifier', ''),
   ('prompt_evaluator', ''),
   ('prompt_reexplainer', ''),
