@@ -60,6 +60,9 @@ export default async function StudentPage() {
 
   const liveSession = { ...session, team: user.team };
 
+  // Student notes are cycle-scoped: stored on the cycle's draft-phase row.
+  const cycleNote = (draftPhase ? draftSessionData?.notes : sessionData?.notes) ?? '';
+
   return (
     <div className="flex flex-col h-screen bg-slate-50">
       <Navbar session={liveSession} currentPhase={phase} />
@@ -75,6 +78,7 @@ export default async function StudentPage() {
           comprehensionSubmitted={comprehensionSubmitted}
           daSessionState={daSessionState}
           draftSummary={draftSessionData?.summary ?? undefined}
+          note={cycleNote}
           mentorId={mentorInfo?.id ?? undefined}
           mentorName={mentorInfo?.name ?? undefined}
         />

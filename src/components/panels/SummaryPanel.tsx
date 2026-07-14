@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { computeSummarySegments } from '@/lib/highlight';
+import { computeHighlightPair, type ColorSegment } from '@/lib/highlight';
+import HighlightedText from '@/components/HighlightedText';
 
 function countWords(text: string): number {
   return text.trim() ? text.trim().split(/\s+/).length : 0;
@@ -9,8 +10,6 @@ function countWords(text: string): number {
 
 // Shared text metrics so the overlay and textarea align character-for-character.
 const textClasses = 'p-4 text-sm leading-relaxed whitespace-pre-wrap break-words';
-
-type Segment = { text: string; hl: boolean };
 
 // Self-contained editor area (overlay + textarea) with its own scroll-sync refs,
 // so it can be rendered both inline and inside the popup modal.
@@ -20,12 +19,14 @@ function EditorArea({
   onBlur,
   segments,
   highlightActive,
+  placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
   onBlur: () => void;
-  segments: Segment[];
+  segments: ColorSegment[];
   highlightActive: boolean;
+  placeholder: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -45,13 +46,7 @@ function EditorArea({
           aria-hidden
           className={`absolute inset-0 overflow-auto pointer-events-none text-slate-700 ${textClasses}`}
         >
-          {segments.map((seg, i) =>
-            seg.hl ? (
-              <mark key={i} className="bg-yellow-200 text-slate-800 rounded-sm">{seg.text}</mark>
-            ) : (
-              <span key={i}>{seg.text}</span>
-            )
-          )}
+          <HighlightedText segments={segments} />
           {'​'}
         </div>
       )}
@@ -61,7 +56,7 @@ function EditorArea({
         className={`absolute inset-0 w-full h-full overflow-auto focus:outline-none resize-none bg-transparent ${textClasses} ${
           highlightActive ? 'text-transparent caret-slate-700' : 'text-slate-700'
         }`}
-        placeholder="지문을 읽고 핵심 내용을 요약하세요..."
+        placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
@@ -80,6 +75,9 @@ export default function SummaryPanel({
   submitLabel = '제출',
   hideSubmit = false,
   passageContent = '',
+  highlightOn,
+  onToggleHighlight,
+  placeholder = '지문을 읽고 핵심 내용을 요약하세요...',
 }: {
   initialValue: string;
   onBlur: (value: string) => void;
@@ -90,9 +88,11 @@ export default function SummaryPanel({
   submitLabel?: string;
   hideSubmit?: boolean;
   passageContent?: string;
+  highlightOn: boolean;
+  onToggleHighlight: () => void;
+  placeholder?: string;
 }) {
   const [value, setValue] = useState(initialValue);
-  const [highlightOn, setHighlightOn] = useState(true);
   const [popped, setPopped] = useState(false);
 
   useEffect(() => { setValue(initialValue); }, [initialValue]);
@@ -108,7 +108,7 @@ export default function SummaryPanel({
   const highlightActive = highlightOn && !!passageContent.trim();
 
   const segments = useMemo(
-    () => (highlightActive ? computeSummarySegments(value, passageContent) : []),
+    () => (highlightActive ? computeHighlightPair(value, passageContent).summary : []),
     [highlightActive, value, passageContent]
   );
 
@@ -120,8 +120,8 @@ export default function SummaryPanel({
   const highlightToggle = passageContent.trim() ? (
     <button
       type="button"
-      onClick={() => setHighlightOn((v) => !v)}
-      title="지문과 4단어 이상 동일한 부분 하이라이트"
+      onClick={onToggleHighlight}
+      title="지문과 3단어 이상 동일한 부분을 지문·요약문에 함께 하이라이트"
       className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
     >
       <span className={`relative w-7 h-4 rounded-full transition-colors ${highlightOn ? 'bg-indigo-500' : 'bg-slate-300'}`}>
@@ -178,6 +178,7 @@ export default function SummaryPanel({
           onBlur={() => onBlur(value)}
           segments={segments}
           highlightActive={highlightActive}
+          placeholder={placeholder}
         />
 
         {submitBar}
@@ -217,6 +218,7 @@ export default function SummaryPanel({
               onBlur={() => onBlur(value)}
               segments={segments}
               highlightActive={highlightActive}
+              placeholder={placeholder}
             />
 
             {submitBar}

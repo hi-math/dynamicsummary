@@ -8,10 +8,10 @@ import SummaryPanel from '@/components/panels/SummaryPanel';
 import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
 import {
-  submitDraft, saveNotes, saveSummary, getCurrentUser,
-  startDASession, sendDAMessage, advanceDATab,
+  submitDraft, saveStudentNote, saveSummary, getCurrentUser,
+  startDASession, sendDAMessage, advanceDATab, studentAdvancePhase,
 } from '@/actions/student';
-import { sendHumanMessage, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
+import { sendHumanMessage, updatePresence, getPresence, getLearningComplete, setTyping, getTyping } from '@/actions/mentor';
 import { cycleKeyFromPhase } from '@/lib/phases';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
@@ -36,39 +36,42 @@ function ChatInputBar({
   loading,
   placeholder,
   disabled = false,
+  onTyping,
 }: {
   onSend: (text: string) => void | Promise<void>;
   loading: boolean;
   placeholder: string;
   disabled?: boolean;
+  onTyping?: (typing: boolean) => void;
 }) {
   const [text, setText] = useState('');
-  const ref = useRef<HTMLInputElement>(null);
+  const ref = useRef<HTMLTextAreaElement>(null);
 
   async function submit() {
     const t = text.trim();
     if (!t || loading || disabled) return;
     setText('');
+    onTyping?.(false);
     await onSend(t);
     requestAnimationFrame(() => ref.current?.focus());
   }
 
   return (
-    <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
-      <input
+    <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2 items-stretch">
+      <textarea
         ref={ref}
-        type="text"
+        rows={2}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => { setText(e.target.value); onTyping?.(e.target.value.length > 0); }}
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
         placeholder={placeholder}
         disabled={disabled}
-        className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
+        className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm leading-relaxed resize-none break-words focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
       />
       <button
         onClick={submit}
         disabled={loading || disabled || !text.trim()}
-        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center w-9"
+        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center w-9 shrink-0"
       >
         {loading ? (
           <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -85,6 +88,38 @@ function ChatInputBar({
   );
 }
 
+// ─── "맨 아래 보기" jump button ─────────────────────────────────────────────────
+// Semi-transparent bubble centered at the bottom of the message list. Shown when
+// new messages arrive while the user has scrolled up.
+function JumpToBottomButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-slate-800/70 hover:bg-slate-800/90 text-white text-xs font-medium px-3 py-1.5 rounded-full shadow-lg backdrop-blur-sm transition-colors"
+    >
+      맨 아래 보기
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+      </svg>
+    </button>
+  );
+}
+
+// ─── Typing indicator bubble ────────────────────────────────────────────────────
+// Incoming-style bubble with three dots waving (staggered bounce). Shown while the
+// other party has text in their input.
+function TypingIndicator() {
+  return (
+    <div className="flex justify-start mb-2">
+      <div className="bg-slate-100 px-3.5 py-3 rounded-lg flex items-center gap-1">
+        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" />
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function DASession({
@@ -96,6 +131,7 @@ export default function DASession({
   humanMessages,
   initialDAState,
   draftSummary,
+  note,
   mentorId,
   mentorName,
 }: {
@@ -107,6 +143,7 @@ export default function DASession({
   humanMessages: HumanMessage[];
   initialDAState?: DASessionState | null;
   draftSummary?: string;
+  note?: string;
   mentorId?: string;
   mentorName?: string;
 }) {
@@ -117,8 +154,6 @@ export default function DASession({
   // DA starts automatically on entry — the summary was already finalized in the draft stage,
   // so there is no separate submit step here.
   const submitted = true;
-  // Human team: mentor must mark "학습 완료" before the student can advance.
-  const [learningCompleted, setLearningCompleted] = useState(!!sessionData?.learning_completed);
   const [daState, setDaState] = useState<DASessionState | null>(initialDAState ?? null);
   // draftSummary: the draft text used for Assessor judgment; falls back to saved DA summary
   const initialSummary = draftSummary ?? sessionData?.summary ?? '';
@@ -166,16 +201,48 @@ export default function DASession({
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState('');
   const [daInitError, setDaInitError] = useState('');
-  const bottomRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const daInitRef = useRef(false);
+
+  // Chat scroll management: keep the user's scroll position when they scroll up,
+  // and show a "맨 아래 보기" jump button when new messages arrive while scrolled up.
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  function handleChatScroll() {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    atBottomRef.current = near;
+    if (near) setShowJump(false);
+  }
+
+  function scrollChatToBottom() {
+    const el = chatScrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    atBottomRef.current = true;
+    setShowJump(false);
+  }
 
   // Human messages state (human team)
   const [humanMsgs, setHumanMsgs] = useState(humanMessages);
   const [mentorOnline, setMentorOnline] = useState(false);
+  // Typing indicators (human team): my own (heartbeat to server) and the mentor's (polled).
+  const [localTyping, setLocalTyping] = useState(false);
+  const [mentorTyping, setMentorTyping] = useState(false);
+
+  // Human team: mentor's "학습 완료" flag. When true, the chat is closed with a
+  // system notice and the "사이클 종료" button below becomes enabled.
+  const [learningCompleted, setLearningCompleted] = useState(!!sessionData?.learning_completed);
+  // "사이클 종료" button in-flight state
+  const [finishing, setFinishing] = useState(false);
 
   // Human team: allow collapsing the chat panel to widen the reading/summary area
   const [chatCollapsed, setChatCollapsed] = useState(false);
+
+  // Highlight toggle shared by the summary and passage panels.
+  const [highlightOn, setHighlightOn] = useState(true);
 
   // Resizable bottom row (Reference Tools / Notes) height in px. Dragging the
   // divider grows/shrinks the passage & summary area above it.
@@ -202,31 +269,53 @@ export default function DASession({
   }
 
   const tabs = daState?.priority_queue ?? [];
-  const allResolved = tabs.length > 0 && tabs.every((k) => daState?.resolutions[k]);
-  const currentItemKey = tabs[daState?.current_item_idx ?? 0] ?? null;
   const activeItemKey = tabs[activeTabIdx] ?? null;
 
-  // DA is finished when all chatbot tasks are resolved / the mentor marked human learning complete.
-  // At that point the student sees a waiting screen and the admin decides when to advance the cycle.
-  const daComplete = isChatbot ? allResolved : learningCompleted;
+  // DA is finished — chatbot: all tasks resolved; human: mentor marked 학습 완료.
+  // When finished, the "사이클 종료" button becomes enabled so the student can move
+  // to the separate done phase themselves. (Admin still controls done → next cycle.)
+  const allResolved = tabs.length > 0 && tabs.every((k) => daState?.resolutions[k]);
+  const daFinished = isChatbot ? allResolved : learningCompleted;
+  const cycleNum = cycleKeyFromPhase(phase).replace('cycle', '');
 
-  // While waiting, poll the student's phase; when the admin advances it, re-render the page.
+  // Poll the student's phase; when the admin advances it (e.g. to the cycle-done phase),
+  // re-render so the router switches away from the DA page. The completion/waiting screen
+  // now lives in a separate phase (cycleN_done → CycleCompletePhase), not here.
   useEffect(() => {
-    if (!daComplete) return;
     const interval = setInterval(async () => {
       const u = await getCurrentUser(session.id);
       if (u && u.current_phase !== phase) router.refresh();
     }, 3000);
     return () => clearInterval(interval);
-  }, [daComplete, phase, session.id, router]);
+  }, [phase, session.id, router]);
 
-  // Scroll to bottom when messages change
+  // New messages: auto-scroll only if the user is already at the bottom; otherwise
+  // keep their position and reveal the "맨 아래 보기" jump button. Runs after paint so
+  // scrollHeight reflects the newly appended message.
   useEffect(() => {
-    if (activeItemKey) {
-      bottomRefs.current[activeItemKey]?.scrollIntoView({ behavior: 'smooth' });
-    }
-    bottomRefs.current['human']?.scrollIntoView({ behavior: 'smooth' });
-  }, [messagesPerItem, activeItemKey, humanMsgs]);
+    const raf = requestAnimationFrame(() => {
+      const el = chatScrollRef.current;
+      if (!el) return;
+      if (atBottomRef.current) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        setShowJump(false);
+      } else {
+        setShowJump(true);
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [messagesPerItem, humanMsgs, mentorTyping, chatLoading]);
+
+  // Tab switch (chatbot) — always jump to the bottom of the newly shown conversation.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = chatScrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight });
+      atBottomRef.current = true;
+      setShowJump(false);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activeItemKey]);
 
   // Runs the Assessor pipeline (or adopts a pre-generated session). Surfaces failures
   // so the panel can show an error + retry instead of spinning forever.
@@ -268,7 +357,6 @@ export default function DASession({
 
   // Human team polling
   const cycleKey = cycleKeyFromPhase(phase);
-  const cycleNum = cycleKey.replace('cycle', '');
   useEffect(() => {
     if (isChatbot) return;
     async function poll() {
@@ -285,15 +373,41 @@ export default function DASession({
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [session.id, isChatbot, cycleKey]);
 
-  // Human team: poll mentor's learning-completion approval to enable the advance button
+  // Human team: poll the mentor's "학습 완료" flag. When set, close the chat and
+  // enable the "사이클 종료" button (student then advances to the done phase).
   useEffect(() => {
-    if (isChatbot || learningCompleted) return;
-    const interval = setInterval(async () => {
+    if (isChatbot) return;
+    async function checkLearning() {
       const done = await getLearningComplete(session.id, phase);
-      if (done) setLearningCompleted(true);
-    }, 3000);
+      setLearningCompleted(done);
+    }
+    checkLearning();
+    const interval = setInterval(checkLearning, 3000);
     return () => clearInterval(interval);
-  }, [session.id, phase, isChatbot, learningCompleted]);
+  }, [session.id, phase, isChatbot]);
+
+  // Human team: broadcast my own typing state. While I have text in the input, refresh
+  // the typing_at heartbeat every 2s; clear it when I stop.
+  useEffect(() => {
+    if (isChatbot) return;
+    if (!localTyping) { setTyping(session.id, false); return; }
+    setTyping(session.id, true);
+    const interval = setInterval(() => setTyping(session.id, true), 2000);
+    return () => { clearInterval(interval); setTyping(session.id, false); };
+  }, [localTyping, isChatbot, session.id]);
+
+  // Human team: poll the mentor's typing state (treat as typing if refreshed < 4s ago).
+  useEffect(() => {
+    if (isChatbot || !mentorId) return;
+    async function checkTyping() {
+      if (!mentorId) return;
+      const ts = await getTyping(mentorId);
+      setMentorTyping(!!ts && Date.now() - new Date(ts).getTime() < 4000);
+    }
+    checkTyping();
+    const interval = setInterval(checkTyping, 1500);
+    return () => clearInterval(interval);
+  }, [isChatbot, mentorId]);
 
   // Own heartbeat — update our presence every 15s
   useEffect(() => {
@@ -328,6 +442,7 @@ export default function DASession({
 
     setChatError('');
     setChatLoading(true);
+    atBottomRef.current = true; // scroll to show the message I just sent
 
     const tempId = String(Date.now());
     setMessagesPerItem((prev) => ({
@@ -398,6 +513,7 @@ export default function DASession({
 
   async function handleHumanSend(text: string) {
     if (!text.trim()) return;
+    atBottomRef.current = true; // scroll to show the message I just sent
     // Optimistic: show my message immediately. The next poll reconciles it with the
     // persisted row, so we don't block on the send + refetch round trip.
     const tmpId = `tmp_${Date.now()}`;
@@ -421,8 +537,24 @@ export default function DASession({
     await saveSummary(session.id, phase, value);
   }
 
-  async function handleNotesBlur(value: string) {
-    await saveNotes(session.id, phase, value);
+  async function handleNoteSave(value: string) {
+    const res = await saveStudentNote(session.id, cycleKey, value);
+    if (res?.error) showToast(`노트 저장 실패: ${res.error}`, 'error');
+    return res;
+  }
+
+  function handleNoteBeacon(value: string) {
+    const payload = JSON.stringify({ studentId: session.id, cycleKey, content: value });
+    navigator.sendBeacon('/api/save-note', new Blob([payload], { type: 'application/json' }));
+  }
+
+  // "사이클 종료" — advance the student from cycleN_da to the separate cycleN_done phase.
+  async function handleFinishCycle() {
+    if (finishing || !daFinished) return;
+    setFinishing(true);
+    const res = await studentAdvancePhase(session.id);
+    if (res?.error) { showToast(res.error, 'error'); setFinishing(false); return; }
+    router.refresh();
   }
 
   // ─── Right panel ─────────────────────────────────────────────────────────────
@@ -496,38 +628,40 @@ export default function DASession({
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-3">
-          {activeMessages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs text-center gap-2 px-4">
-              대화를 시작해주세요.
-            </div>
-          )}
-          {activeMessages.map((msg) => {
-            const isUser = msg.role === 'user';
-            return (
-              <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-2`}>
-                {!isUser && (
-                  <div className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs mr-2 shrink-0 mt-0.5">AI</div>
-                )}
-                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${
-                  isUser ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
-                }`}>
-                  {msg.content}
-                </div>
+        <div className="relative flex-1 min-h-0">
+          <div ref={chatScrollRef} onScroll={handleChatScroll} className="h-full overflow-y-auto p-3">
+            {activeMessages.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs text-center gap-2 px-4">
+                대화를 시작해주세요.
               </div>
-            );
-          })}
-          {chatLoading && activeItemKey === tabs[daState.current_item_idx ?? 0] && (
-            <div className="flex justify-start mb-2">
-              <div className="bg-slate-100 px-3 py-2 rounded-lg text-sm text-slate-400">입력 중...</div>
-            </div>
-          )}
-          {isResolved && (
-            <div className="flex justify-center my-2">
-              <span className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full">과제 완료 ✓</span>
-            </div>
-          )}
-          <div ref={(el) => { bottomRefs.current[activeItemKey] = el; }} />
+            )}
+            {activeMessages.map((msg) => {
+              const isUser = msg.role === 'user';
+              return (
+                <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-2`}>
+                  {!isUser && (
+                    <div className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs mr-2 shrink-0 mt-0.5">AI</div>
+                  )}
+                  <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${
+                    isUser ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
+                  }`}>
+                    {msg.content}
+                  </div>
+                </div>
+              );
+            })}
+            {chatLoading && activeItemKey === tabs[daState.current_item_idx ?? 0] && (
+              <div className="flex justify-start mb-2">
+                <div className="bg-slate-100 px-3 py-2 rounded-lg text-sm text-slate-400">입력 중...</div>
+              </div>
+            )}
+            {isResolved && (
+              <div className="flex justify-center my-2">
+                <span className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full">과제 완료 ✓</span>
+              </div>
+            )}
+          </div>
+          {showJump && <JumpToBottomButton onClick={scrollChatToBottom} />}
         </div>
 
         {chatError && (
@@ -582,69 +716,54 @@ export default function DASession({
         )}
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-3">
-          {humanMsgs.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs text-center gap-2 px-4">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              {chatEnabled ? '대화를 시작해보세요.' : '멘토의 접속을 기다리고 있습니다.'}
-            </div>
-          )}
-          {humanMsgs.map((msg) => {
-            const isMe = msg.sender_id === session.id;
-            return (
-              <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} mb-2`}>
-                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${
-                  isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
-                }`}>
-                  {msg.content}
+        <div className="relative flex-1 min-h-0">
+          <div ref={chatScrollRef} onScroll={handleChatScroll} className="h-full overflow-y-auto p-3">
+            {humanMsgs.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs text-center gap-2 px-4">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                {chatEnabled ? '대화를 시작해보세요.' : '멘토의 접속을 기다리고 있습니다.'}
+              </div>
+            )}
+            {humanMsgs.map((msg) => {
+              const isMe = msg.sender_id === session.id;
+              return (
+                <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} mb-2`}>
+                  <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap ${
+                    isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
+                  }`}>
+                    {msg.content}
+                  </div>
+                </div>
+              );
+            })}
+            {chatLoading && (
+              <div className="flex justify-start mb-2">
+                <div className="bg-slate-100 px-3 py-2 rounded-lg text-sm text-slate-400">전송 중...</div>
+              </div>
+            )}
+            {learningCompleted && (
+              <div className="flex justify-start mb-2">
+                <div className="max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed bg-amber-100 text-amber-800 border border-amber-200">
+                  멘토가 대화를 종료하였습니다. 요약문을 작성하세요.
                 </div>
               </div>
-            );
-          })}
-          {chatLoading && (
-            <div className="flex justify-start mb-2">
-              <div className="bg-slate-100 px-3 py-2 rounded-lg text-sm text-slate-400">전송 중...</div>
-            </div>
-          )}
-          <div ref={(el) => { if (el) bottomRefs.current['human'] = el; }} />
+            )}
+            {mentorTyping && !learningCompleted && <TypingIndicator />}
+          </div>
+          {showJump && <JumpToBottomButton onClick={scrollChatToBottom} />}
         </div>
 
         {/* Input */}
         <ChatInputBar
           onSend={handleHumanSend}
           loading={chatLoading}
-          disabled={!chatEnabled}
-          placeholder={chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
+          disabled={!chatEnabled || learningCompleted}
+          onTyping={setLocalTyping}
+          placeholder={learningCompleted ? '대화가 종료되었습니다.' : chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
         />
-      </div>
-    );
-  }
-
-  // ─── Waiting screen ──────────────────────────────────────────────────────────
-  // Shown once the DA is finished. The student cannot advance themselves; they wait
-  // here until the admin moves them to the next cycle (this component then re-renders).
-  if (daComplete) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center p-8 gap-5 text-center">
-        <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center">
-          <svg className="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-        </div>
-        <div>
-          <h2 className="text-xl font-bold text-slate-800 mb-1.5">사이클 {cycleNum} 동적평가를 완료했습니다</h2>
-          <p className="text-sm text-slate-500 leading-relaxed">
-            수고하셨습니다. 관리자가 다음 단계로 안내할 때까지<br />
-            이 화면에서 잠시 기다려 주세요.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
-          <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
-          다음 단계 대기 중...
-        </div>
       </div>
     );
   }
@@ -657,7 +776,12 @@ export default function DASession({
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <div className="flex gap-3 min-h-0 flex-1">
             <div className="flex-1 min-h-0">
-              <ReadingPassagePanel title={passage.title} content={passage.content} />
+              <ReadingPassagePanel
+                title={passage.title}
+                content={passage.content}
+                highlightSummary={currentSummary}
+                highlightActive={highlightOn}
+              />
             </div>
             <div className="flex-1 min-h-0">
               <SummaryPanel
@@ -668,6 +792,8 @@ export default function DASession({
                 submitting={false}
                 hideSubmit={true}
                 passageContent={passage.content}
+                highlightOn={highlightOn}
+                onToggleHighlight={() => setHighlightOn((v) => !v)}
               />
             </div>
           </div>
@@ -684,7 +810,7 @@ export default function DASession({
           <div className="flex gap-3 shrink-0" style={{ height: bottomHeight }}>
             <div className="flex-1 min-h-0"><ReferenceToolsPanel /></div>
             <div className="flex-1 min-h-0">
-              <NotesPanel initialValue={sessionData?.notes ?? ''} onBlur={handleNotesBlur} />
+              <NotesPanel initialValue={note ?? ''} onSave={handleNoteSave} onBeaconSave={handleNoteBeacon} />
             </div>
           </div>
         </div>
@@ -710,6 +836,24 @@ export default function DASession({
             {isChatbot ? renderChatbotPanel() : renderHumanPanel()}
           </div>
         )}
+      </div>
+
+      {/* Cycle-finish bar — enabled once the DA is finished (chatbot: all tasks resolved,
+          human: mentor marked 학습 완료). Moves the student to the separate done phase. */}
+      <div className="shrink-0 flex items-center justify-end gap-3 pt-1">
+        {!daFinished && isChatbot && (
+          <span className="text-xs text-slate-400">
+            모든 과제를 완료하면 종료할 수 있습니다.
+          </span>
+        )}
+        <button
+          onClick={handleFinishCycle}
+          disabled={!daFinished || finishing}
+          title={daFinished ? '' : '동적평가가 완료되면 활성화됩니다.'}
+          className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
+        >
+          {finishing ? '이동 중...' : `사이클 ${cycleNum} 종료`}
+        </button>
       </div>
     </div>
   );

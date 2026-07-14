@@ -279,6 +279,16 @@ export async function getStudentData(studentId: string) {
   };
 }
 
+// Soft-delete: toggle whether a student's collected data shows in the data view or the
+// trash. Nothing is removed from the database.
+export async function setDataTrashed(studentId: string, trashed: boolean): Promise<{ error?: string }> {
+  const supabase = createServerClient();
+  const { error } = await supabase.from('users').update({ data_trashed: trashed }).eq('id', studentId);
+  if (error) return { error: error.message };
+  revalidatePath('/admin');
+  return {};
+}
+
 export async function getAllStudentsData() {
   const supabase = createServerClient();
   const { data: students } = await supabase

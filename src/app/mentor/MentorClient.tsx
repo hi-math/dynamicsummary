@@ -5,9 +5,13 @@ import {
   sendHumanMessage, getMentorStudents,
   updatePresence, getPresenceBatch, getStudentSummary, getCyclePassage,
   getMentorNote, saveMentorNote, getLearningComplete, setLearningComplete,
+  setTyping, getTyping,
 } from '@/actions/mentor';
 import { isDAPhase, cycleKeyFromPhase, PHASE_LABEL, PHASE_GROUPS } from '@/lib/phases';
-import { computeSummarySegments } from '@/lib/highlight';
+import { computeHighlightPair } from '@/lib/highlight';
+import { useNoteAutosave, noteStatusLabel } from '@/lib/useNoteAutosave';
+import { useToast } from '@/components/ui/Toast';
+import HighlightedText from '@/components/HighlightedText';
 import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import type { HumanMessage, User, SessionCookie } from '@/types';
 
@@ -86,11 +90,10 @@ function ProgressPanel({ student }: { student: User }) {
 
 // ─── Read-only summary panel ──────────────────────────────────────────────────
 
-function StudentSummaryPanel({ summary, loading, passageContent = '' }: { summary: string | null; loading: boolean; passageContent?: string }) {
-  const [highlightOn, setHighlightOn] = useState(true);
+function StudentSummaryPanel({ summary, loading, passageContent = '', highlightOn, onToggleHighlight }: { summary: string | null; loading: boolean; passageContent?: string; highlightOn: boolean; onToggleHighlight: () => void }) {
   const highlightActive = highlightOn && !!passageContent.trim();
   const segments = useMemo(
-    () => (summary && highlightActive ? computeSummarySegments(summary, passageContent) : null),
+    () => (summary && highlightActive ? computeHighlightPair(summary, passageContent).summary : null),
     [summary, highlightActive, passageContent]
   );
 
@@ -100,11 +103,14 @@ function StudentSummaryPanel({ summary, loading, passageContent = '' }: { summar
         <h3 className="text-base font-semibold text-slate-700 shrink-0">학생 요약문</h3>
         <div className="flex items-center gap-3 shrink-0">
           {loading && <span className="text-base text-slate-400">불러오는 중...</span>}
+          {summary && (
+            <span className="text-base text-slate-400">{summary.trim() ? summary.trim().split(/\s+/).length : 0} 단어</span>
+          )}
           {passageContent.trim() && (
             <button
               type="button"
-              onClick={() => setHighlightOn((v) => !v)}
-              title="지문과 4단어 이상 동일한 부분 하이라이트"
+              onClick={onToggleHighlight}
+              title="지문과 3단어 이상 동일한 부분을 지문·요약문에 함께 하이라이트"
               className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
             >
               <span className={`relative w-7 h-4 rounded-full transition-colors ${highlightOn ? 'bg-indigo-500' : 'bg-slate-300'}`}>
@@ -122,15 +128,7 @@ function StudentSummaryPanel({ summary, loading, passageContent = '' }: { summar
           </div>
         ) : summary ? (
           <p className="text-base text-slate-700 leading-relaxed whitespace-pre-wrap">
-            {segments
-              ? segments.map((seg, i) =>
-                  seg.hl ? (
-                    <mark key={i} className="bg-yellow-200 text-slate-800 rounded-sm">{seg.text}</mark>
-                  ) : (
-                    <span key={i}>{seg.text}</span>
-                  )
-                )
-              : summary}
+            {segments ? <HighlightedText segments={segments} /> : summary}
           </p>
         ) : (
           <p className="text-base text-slate-400 italic">아직 요약문이 없습니다.</p>
@@ -147,36 +145,38 @@ function MentorNotesPanel({
   initialValue,
   onSave,
 }: {
-  noteKey: string; // student+cycle identity — remounts panel on change
+  noteKey: string; // student+cycle identity — reloads panel on change
   initialValue: string;
-  onSave: (value: string) => Promise<void>;
+  onSave: (value: string) => Promise<{ error?: string } | void>;
 }) {
-  const [value, setValue] = useState(initialValue);
-  const [status, setStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
-
-  useEffect(() => { setValue(initialValue); setStatus('idle'); }, [initialValue, noteKey]);
-
-  async function handleBlur() {
-    setStatus('saving');
-    await onSave(value);
-    setStatus('saved');
-  }
+  const { value, status, onChange, flush } = useNoteAutosave(initialValue, onSave, undefined, noteKey);
 
   return (
     <div className="flex flex-col h-full bg-white border border-slate-200 rounded-lg overflow-hidden">
       <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 shrink-0 flex items-center justify-between">
         <h3 className="text-base font-semibold text-slate-700">멘토 메모</h3>
-        <span className="text-xs text-slate-400">
-          {status === 'saving' ? '저장 중...' : status === 'saved' ? '저장됨' : '자동 저장'}
-        </span>
+        <span className={`text-xs ${status === 'error' ? 'text-red-500' : 'text-slate-400'}`}>{noteStatusLabel(status)}</span>
       </div>
       <textarea
         className="flex-1 p-4 text-base text-slate-700 focus:outline-none resize-none leading-relaxed"
-        placeholder="학생 관찰·평가 메모를 자유롭게 입력하세요 (포커스 해제 시 자동 저장, 사이클별로 구분됨)..."
+        placeholder="학생 관찰·평가 메모를 자유롭게 입력하세요 (자동 저장, 사이클별로 구분됨)..."
         value={value}
-        onChange={(e) => { setValue(e.target.value); if (status !== 'idle') setStatus('idle'); }}
-        onBlur={handleBlur}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={flush}
       />
+    </div>
+  );
+}
+
+// ─── Typing indicator bubble (three waving dots) ────────────────────────────────
+function TypingIndicator() {
+  return (
+    <div className="flex justify-start">
+      <div className="bg-slate-100 px-3.5 py-3 rounded-lg flex items-center gap-1">
+        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" />
+      </div>
     </div>
   );
 }
@@ -198,14 +198,68 @@ function ChatPanelMentor({
 }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [studentTyping, setStudentTyping] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const typingActive = input.length > 0;
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // Broadcast my own typing state (heartbeat while I have text, clear when I stop).
+  useEffect(() => {
+    if (!typingActive) { setTyping(session.id, false); return; }
+    setTyping(session.id, true);
+    const iv = setInterval(() => setTyping(session.id, true), 2000);
+    return () => { clearInterval(iv); setTyping(session.id, false); };
+  }, [typingActive, session.id]);
+
+  // Poll the selected student's typing state (typing if refreshed < 4s ago).
+  useEffect(() => {
+    async function check() {
+      const ts = await getTyping(selected.id);
+      setStudentTyping(!!ts && Date.now() - new Date(ts).getTime() < 4000);
+    }
+    check();
+    const iv = setInterval(check, 1500);
+    return () => clearInterval(iv);
+  }, [selected.id]);
+
+  // Chat scroll management: keep the user's position when scrolled up, and show a
+  // "맨 아래 보기" jump button when new messages arrive while scrolled up.
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  function handleChatScroll() {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    atBottomRef.current = near;
+    if (near) setShowJump(false);
+  }
+
+  function scrollChatToBottom() {
+    const el = chatScrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    atBottomRef.current = true;
+    setShowJump(false);
+  }
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = chatScrollRef.current;
+      if (!el) return;
+      if (atBottomRef.current) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        setShowJump(false);
+      } else {
+        setShowJump(true);
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [messages, studentTyping]);
 
   async function handleSend() {
     const text = input.trim();
     if (!text || sending || !studentOnline) return;
+    atBottomRef.current = true; // scroll to show the message I just sent
     setInput('');
     setSending(true);
     await onSend(text);
@@ -237,50 +291,63 @@ function ChatPanelMentor({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-slate-400 text-base text-center gap-2">
-            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-            {studentOnline ? '대화를 시작해보세요.' : '학생의 접속을 기다리고 있습니다.'}
-          </div>
-        )}
-        {messages.map((msg) => {
-          const isMe = msg.sender_id === session.id;
-          return (
-            <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] px-3 py-2 rounded-lg text-base leading-relaxed whitespace-pre-wrap ${
-                isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
-              }`}>
-                {!isMe && <p className="text-base font-medium text-slate-500 mb-0.5">{selected.name}</p>}
-                <p>{msg.content}</p>
-                <p className={`text-xs mt-1 ${isMe ? 'text-indigo-300' : 'text-slate-400'}`}>
-                  {new Date(msg.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
-                </p>
-              </div>
+      <div className="relative flex-1 min-h-0">
+        <div ref={chatScrollRef} onScroll={handleChatScroll} className="h-full overflow-y-auto p-3 space-y-2">
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full text-slate-400 text-base text-center gap-2">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              {studentOnline ? '대화를 시작해보세요.' : '학생의 접속을 기다리고 있습니다.'}
             </div>
-          );
-        })}
-        <div ref={bottomRef} />
+          )}
+          {messages.map((msg) => {
+            const isMe = msg.sender_id === session.id;
+            return (
+              <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-base leading-relaxed whitespace-pre-wrap ${
+                  isMe ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-800'
+                }`}>
+                  {!isMe && <p className="text-base font-medium text-slate-500 mb-0.5">{selected.name}</p>}
+                  <p>{msg.content}</p>
+                  <p className={`text-xs mt-1 ${isMe ? 'text-indigo-300' : 'text-slate-400'}`}>
+                    {new Date(msg.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+          {studentTyping && <TypingIndicator />}
+        </div>
+        {showJump && (
+          <button
+            onClick={scrollChatToBottom}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-slate-800/70 hover:bg-slate-800/90 text-white text-xs font-medium px-3 py-1.5 rounded-full shadow-lg backdrop-blur-sm transition-colors"
+          >
+            맨 아래 보기
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        )}
       </div>
 
-      <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2">
-        <input
+      <div className="p-2 border-t border-slate-200 shrink-0 flex gap-2 items-stretch">
+        <textarea
           ref={inputRef}
-          type="text"
+          rows={2}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
           placeholder={studentOnline ? '메시지를 입력하세요...' : '학생 접속 대기 중...'}
           disabled={!studentOnline || sending}
-          className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
+          className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-base leading-relaxed resize-none break-words focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-slate-50 disabled:text-slate-400"
         />
         <button
           onClick={handleSend}
           disabled={!studentOnline || !input.trim() || sending}
-          className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
+          className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center w-9 shrink-0"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -300,6 +367,7 @@ export default function MentorClient({
   session: SessionCookie;
   initialStudents: User[];
 }) {
+  const { showToast } = useToast();
   const [students, setStudents] = useState<User[]>(initialStudents);
   const [selected, setSelected] = useState<User | null>(null);
   const [messages, setMessages] = useState<HumanMessage[]>([]);
@@ -307,6 +375,8 @@ export default function MentorClient({
   const [passage, setPassage] = useState<Passage | null>(null);
   const [studentSummary, setStudentSummary] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
+  // Highlight toggle shared by the student-summary and passage panels.
+  const [highlightOn, setHighlightOn] = useState(true);
   const [note, setNote] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [learningDone, setLearningDone] = useState(false);
@@ -434,8 +504,9 @@ export default function MentorClient({
   async function handleSaveNote(value: string) {
     if (!selected) return;
     const cycleKey = cycleKeyFromPhase(selected.current_phase);
-    await saveMentorNote(session.id, selected.id, cycleKey, value);
-    setNote(value);
+    const res = await saveMentorNote(session.id, selected.id, cycleKey, value);
+    if (res?.error) showToast(`메모 저장 실패: ${res.error}`, 'error');
+    return res;
   }
 
   // Load learning-completion flag for the selected student's DA phase
@@ -538,11 +609,22 @@ export default function MentorClient({
             /* DA phase: passage | (summary + notes) | chat */
             <>
               <div className="flex-1 min-h-0">
-                <ReadingPassagePanel title={passage?.title ?? ''} content={passage?.content ?? ''} />
+                <ReadingPassagePanel
+                  title={passage?.title ?? ''}
+                  content={passage?.content ?? ''}
+                  highlightSummary={studentSummary ?? ''}
+                  highlightActive={highlightOn}
+                />
               </div>
               <div className="flex-1 min-h-0 flex flex-col gap-3">
                 <div className="flex-1 min-h-0">
-                  <StudentSummaryPanel summary={studentSummary} loading={dataLoading} passageContent={passage?.content ?? ''} />
+                  <StudentSummaryPanel
+                    summary={studentSummary}
+                    loading={dataLoading}
+                    passageContent={passage?.content ?? ''}
+                    highlightOn={highlightOn}
+                    onToggleHighlight={() => setHighlightOn((v) => !v)}
+                  />
                 </div>
                 <button
                   onClick={handleToggleComplete}

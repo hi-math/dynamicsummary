@@ -7,7 +7,8 @@ import ReadingPassagePanel from '@/components/panels/ReadingPassagePanel';
 import SummaryPanel from '@/components/panels/SummaryPanel';
 import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
-import { submitDraft, saveNotes, saveSummary, studentAdvancePhase } from '@/actions/student';
+import { submitDraft, saveStudentNote, saveSummary, studentAdvancePhase } from '@/actions/student';
+import { cycleKeyFromPhase } from '@/lib/phases';
 import type { SessionCookie, SessionData } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
@@ -17,17 +18,22 @@ export default function DraftPhase({
   phase,
   passage,
   sessionData,
+  note,
 }: {
   session: SessionCookie;
   phase: string;
   passage: Passage;
   sessionData: SessionData | null;
+  note: string;
 }) {
   const { showToast } = useToast();
+  const cycleKey = cycleKeyFromPhase(phase);
   const [submitted, setSubmitted] = useState(!!sessionData?.submitted_at);
   const [submitting, setSubmitting] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [summaryValue, setSummaryValue] = useState(sessionData?.summary ?? '');
+  // Highlight toggle shared by the summary and passage panels.
+  const [highlightOn, setHighlightOn] = useState(true);
 
   // Resizable bottom row (Reference Tools / Notes) height in px. Dragging the
   // divider grows/shrinks the passage & summary area above it.
@@ -57,8 +63,15 @@ export default function DraftPhase({
     await saveSummary(session.id, phase, value);
   }
 
-  async function handleNotesBlur(value: string) {
-    await saveNotes(session.id, phase, value);
+  async function handleNoteSave(value: string) {
+    const res = await saveStudentNote(session.id, cycleKey, value);
+    if (res?.error) showToast(`노트 저장 실패: ${res.error}`, 'error');
+    return res;
+  }
+
+  function handleNoteBeacon(value: string) {
+    const payload = JSON.stringify({ studentId: session.id, cycleKey, content: value });
+    navigator.sendBeacon('/api/save-note', new Blob([payload], { type: 'application/json' }));
   }
 
   async function handleConfirmSubmit() {
@@ -78,7 +91,12 @@ export default function DraftPhase({
         {/* Top row — fills remaining space */}
         <div className="flex gap-3 min-h-0 flex-1">
           <div className="flex-1 min-h-0">
-            <ReadingPassagePanel title={passage.title} content={passage.content} />
+            <ReadingPassagePanel
+              title={passage.title}
+              content={passage.content}
+              highlightSummary={summaryValue}
+              highlightActive={highlightOn}
+            />
           </div>
           <div className="flex-1 min-h-0">
             <SummaryPanel
@@ -89,6 +107,9 @@ export default function DraftPhase({
               submitting={false}
               hideSubmit={true}
               passageContent={passage.content}
+              highlightOn={highlightOn}
+              onToggleHighlight={() => setHighlightOn((v) => !v)}
+              placeholder={'- 하나의 완전한 단락 형식으로 영어 요약문을 작성해 주세요. (분량: 140~200단어)\n- 요약문 작성을 마친 후, 다음 페이지로 이동하여 읽기 이해도 점검을 위한 3개의 문항에 모두 답해 주시기 바랍니다.'}
             />
           </div>
         </div>
@@ -109,8 +130,9 @@ export default function DraftPhase({
           </div>
           <div className="flex-1 min-h-0">
             <NotesPanel
-              initialValue={sessionData?.notes ?? ''}
-              onBlur={handleNotesBlur}
+              initialValue={note}
+              onSave={handleNoteSave}
+              onBeaconSave={handleNoteBeacon}
             />
           </div>
         </div>

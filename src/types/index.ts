@@ -11,6 +11,7 @@ export type User = {
   mentor_id: string | null;
   current_phase: string;
   sort_order?: number | null;   // manual display order in the admin account list
+  data_trashed?: boolean;       // soft-delete flag for the admin data view (true = in trash)
   created_at?: string;
 };
 

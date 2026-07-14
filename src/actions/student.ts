@@ -20,12 +20,17 @@ export async function getSessionData(studentId: string, phase: string): Promise<
   return data as SessionData | null;
 }
 
-export async function saveNotes(studentId: string, phase: string, notes: string) {
+// Student notes are shared across every phase of a cycle. They are persisted on the
+// cycle's draft-phase session_data row (canonical), so draft / comprehension / DA all
+// read and write the same note. Returns an error so the UI can surface save failures.
+export async function saveStudentNote(studentId: string, cycleKey: string, content: string): Promise<{ error?: string }> {
   const supabase = createServerClient();
-  await supabase.from('session_data').upsert(
-    { student_id: studentId, phase, notes, updated_at: new Date().toISOString() },
+  const { error } = await supabase.from('session_data').upsert(
+    { student_id: studentId, phase: `${cycleKey}_draft`, notes: content, updated_at: new Date().toISOString() },
     { onConflict: 'student_id,phase' },
   );
+  if (error) return { error: error.message };
+  return {};
 }
 
 export async function saveSummary(studentId: string, phase: string, summary: string) {

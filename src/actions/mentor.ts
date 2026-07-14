@@ -2,6 +2,7 @@
 
 // -- Run in Supabase SQL Editor:
 // -- create table if not exists presence (user_id text primary key, last_seen timestamptz not null default now());
+// -- alter table presence add column if not exists typing_at timestamptz;
 // -- alter table presence enable row level security;
 // -- create policy "presence_all" on presence for all using (true) with check (true);
 // --
@@ -76,6 +77,25 @@ export async function getPresence(userId: string): Promise<string | null> {
   const supabase = createServerClient();
   const { data } = await supabase.from('presence').select('last_seen').eq('user_id', userId).single();
   return data?.last_seen ?? null;
+}
+
+// Typing indicator — reuses the presence row. `typing_at` is refreshed while the user
+// is typing and cleared (null) when they stop. Readers treat it as "typing" only if recent.
+// Migration for existing DB: alter table presence add column if not exists typing_at timestamptz;
+export async function setTyping(userId: string, typing: boolean): Promise<void> {
+  const supabase = createServerClient();
+  const { error } = await supabase.from('presence').upsert(
+    { user_id: userId, typing_at: typing ? new Date().toISOString() : null },
+    { onConflict: 'user_id' },
+  );
+  if (error) console.error('[setTyping] failed — is the presence.typing_at column present?', error.message);
+}
+
+export async function getTyping(userId: string): Promise<string | null> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase.from('presence').select('typing_at').eq('user_id', userId).maybeSingle();
+  if (error) { console.error('[getTyping] failed — is the presence.typing_at column present?', error.message); return null; }
+  return data?.typing_at ?? null;
 }
 
 export async function getPresenceBatch(userIds: string[]): Promise<Record<string, string>> {

@@ -12,12 +12,14 @@ CREATE TABLE IF NOT EXISTS users (
   mentor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   current_phase TEXT NOT NULL DEFAULT 'cycle1_draft',
   sort_order INTEGER,          -- manual display order in the admin account list (drag to reorder)
+  data_trashed BOOLEAN NOT NULL DEFAULT FALSE,  -- soft-delete flag for the admin data view
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Migration (기존 DB에 컬럼 추가 시):
 -- ALTER TABLE users ADD COLUMN IF NOT EXISTS mentor_id TEXT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sort_order INTEGER;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS data_trashed BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- API settings (single row, id = 1)
 CREATE TABLE IF NOT EXISTS api_settings (
@@ -92,6 +94,15 @@ CREATE TABLE IF NOT EXISTS prompt_assets (
   content TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Presence (online heartbeat + typing indicator for human-team chat)
+CREATE TABLE IF NOT EXISTS presence (
+  user_id TEXT PRIMARY KEY,
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  typing_at TIMESTAMPTZ
+);
+-- Migration (기존 DB에 컬럼 추가 시):
+ALTER TABLE presence ADD COLUMN IF NOT EXISTS typing_at TIMESTAMPTZ;
 
 -- Session data (student's work per phase)
 CREATE TABLE IF NOT EXISTS session_data (
