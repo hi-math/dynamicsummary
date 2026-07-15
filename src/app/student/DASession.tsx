@@ -365,25 +365,32 @@ export default function DASession({
     return () => clearInterval(interval);
   }, [session.id, phase, isChatbot]);
 
-  // Own heartbeat — update our presence every 15s
+  // Own heartbeat — update our presence every 10s (and immediately when the tab
+  // becomes visible again, since background timers get throttled).
   useEffect(() => {
     if (isChatbot) return;
-    updatePresence(session.id);
-    const interval = setInterval(() => updatePresence(session.id), 15000);
-    return () => clearInterval(interval);
+    const beat = () => updatePresence(session.id);
+    beat();
+    const interval = setInterval(beat, 10000);
+    const onVis = () => { if (document.visibilityState === 'visible') beat(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis); };
   }, [session.id, isChatbot]);
 
-  // Poll mentor presence every 5s
+  // Poll mentor presence every 5s. Online window is 45s so a couple of missed
+  // heartbeats (throttling / server-action queueing) don't flip to offline.
   useEffect(() => {
     if (isChatbot || !mentorId) return;
     async function checkMentor() {
       if (!mentorId) return;
       const lastSeen = await getPresence(mentorId);
-      setMentorOnline(!!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 30000);
+      setMentorOnline(!!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 45000);
     }
     checkMentor();
     const interval = setInterval(checkMentor, 5000);
-    return () => clearInterval(interval);
+    const onVis = () => { if (document.visibilityState === 'visible') checkMentor(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis); };
   }, [isChatbot, mentorId]);
 
   function isTabLocked(idx: number): boolean {

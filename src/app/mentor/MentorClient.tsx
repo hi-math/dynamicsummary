@@ -17,7 +17,7 @@ import type { HumanMessage, User, SessionCookie } from '@/types';
 type Passage = { title: string; content: string };
 
 function isOnline(lastSeen?: string): boolean {
-  return !!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 30000;
+  return !!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 45000;
 }
 
 // Keep optimistic (tmp_) messages the server hasn't confirmed yet, so a poll landing
@@ -354,14 +354,17 @@ export default function MentorClient({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [students]);
 
-  // Own heartbeat every 15s
+  // Own heartbeat every 10s (and immediately when the tab becomes visible again).
   useEffect(() => {
-    updatePresence(session.id);
-    const interval = setInterval(() => updatePresence(session.id), 15000);
-    return () => clearInterval(interval);
+    const beat = () => updatePresence(session.id);
+    beat();
+    const interval = setInterval(beat, 10000);
+    const onVis = () => { if (document.visibilityState === 'visible') beat(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis); };
   }, [session.id]);
 
-  // Batch presence polling every 5s
+  // Batch presence polling every 5s (+ immediate refresh on tab focus).
   useEffect(() => {
     if (students.length === 0) return;
     async function poll() {
@@ -370,7 +373,9 @@ export default function MentorClient({
     }
     poll();
     const interval = setInterval(poll, 5000);
-    return () => clearInterval(interval);
+    const onVis = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis); };
   }, [students]);
 
   // Refresh student list every 10s
