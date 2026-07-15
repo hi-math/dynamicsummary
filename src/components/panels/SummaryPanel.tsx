@@ -53,7 +53,7 @@ function EditorArea({
       <textarea
         ref={textareaRef}
         onScroll={syncScroll}
-        className={`absolute inset-0 w-full h-full overflow-auto focus:outline-none resize-none bg-transparent ${textClasses} ${
+        className={`absolute inset-0 w-full h-full overflow-auto focus:outline-none resize-none bg-transparent placeholder:text-slate-400 ${textClasses} ${
           highlightActive ? 'text-transparent caret-slate-700' : 'text-slate-700'
         }`}
         placeholder={placeholder}
