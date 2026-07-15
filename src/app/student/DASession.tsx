@@ -710,7 +710,7 @@ export default function DASession({
             {learningCompleted && (
               <div className="flex justify-start mb-2">
                 <div className="max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed bg-amber-100 text-amber-800 border border-amber-200">
-                  멘토가 대화를 종료하였습니다. 요약문을 작성하세요.
+                  멘토가 대화를 종료하였습니다. 수정본을 작성하세요.
                 </div>
               </div>
             )}
