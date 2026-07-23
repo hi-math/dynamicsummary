@@ -173,7 +173,7 @@ export async function saveAPISettings(formData: FormData) {
     openai_key: formData.get('openai_key') ?? '',
     openai_model: formData.get('openai_model') ?? 'gpt-5.5',
     anthropic_key: formData.get('anthropic_key') ?? '',
-    anthropic_model: formData.get('anthropic_model') ?? 'claude-opus-4-7',
+    anthropic_model: formData.get('anthropic_model') ?? 'claude-opus-4-8',
     gemini_key: formData.get('gemini_key') ?? '',
     gemini_model: formData.get('gemini_model') ?? 'gemini-2.5-flash',
     updated_at: new Date().toISOString(),
@@ -267,15 +267,18 @@ export async function getComprehensionQuestionsAdmin() {
 
 export async function getStudentData(studentId: string) {
   const supabase = createServerClient();
-  const [sessionsRes, aiMsgsRes, humanMsgsRes] = await Promise.all([
+  const [sessionsRes, aiMsgsRes, humanMsgsRes, daStatesRes] = await Promise.all([
     supabase.from('session_data').select('*').eq('student_id', studentId),
     supabase.from('ai_messages').select('*').eq('student_id', studentId).order('created_at'),
     supabase.from('human_messages').select('*').eq('student_id', studentId).order('created_at'),
+    // Assessor 진단·지도 계획 (CSV 내보내기의 [진단 및 지도 계획] 섹션에 쓰인다)
+    supabase.from('da_session_state').select('phase, assessor_output').eq('student_id', studentId),
   ]);
   return {
     sessions: sessionsRes.data ?? [],
     aiMessages: aiMsgsRes.data ?? [],
     humanMessages: humanMsgsRes.data ?? [],
+    daStates: daStatesRes.data ?? [],
   };
 }
 

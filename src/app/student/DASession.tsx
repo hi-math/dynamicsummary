@@ -9,7 +9,7 @@ import ReferenceToolsPanel from '@/components/panels/ReferenceToolsPanel';
 import NotesPanel from '@/components/panels/NotesPanel';
 import {
   submitDraft, saveStudentNote, saveSummary, getCurrentUser,
-  startDASession, sendDAMessage, advanceDATab, studentAdvancePhase,
+  startDASession, sendDAMessage, studentAdvancePhase,
 } from '@/actions/student';
 import { sendHumanMessage, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
 import { cycleKeyFromPhase } from '@/lib/phases';
@@ -157,24 +157,8 @@ export default function DASession({
     return initial;
   });
 
-  // Per-item cumulative DA state (identification, verbalization, step) — managed client-side for free navigation
-  const [itemStates, setItemStates] = useState<Record<string, { identification: boolean; verbalization: boolean; step: number }>>(() => {
-    const init: Record<string, { identification: boolean; verbalization: boolean; step: number }> = {};
-    if (initialDAState?.priority_queue) {
-      initialDAState.priority_queue.forEach((key, idx) => {
-        if (idx === initialDAState.current_item_idx) {
-          init[key] = {
-            identification: initialDAState.item_identification_cumulative,
-            verbalization: initialDAState.item_verbalization_cumulative,
-            step: initialDAState.current_step,
-          };
-        } else {
-          init[key] = { identification: false, verbalization: false, step: 1 };
-        }
-      });
-    }
-    return init;
-  });
+  // 유닛 상태(PI/PSV 누적, 단계, 목표)는 서버가 소유한다 (0719 설계).
+  // 클라이언트는 daState.active_unit 을 읽기만 하고 따로 미러링하지 않는다.
 
   // Active tab index (into priority_queue)
   const [activeTabIdx, setActiveTabIdx] = useState(() => initialDAState?.current_item_idx ?? 0);
@@ -413,8 +397,8 @@ export default function DASession({
       [activeItemKey]: [...(prev[activeItemKey] ?? []), { role: 'user', content: text, id: tempId }],
     }));
 
-    const currentItemState = itemStates[activeItemKey] ?? { identification: false, verbalization: false, step: 1 };
-    const res = await sendDAMessage(session.id, phase, text, currentSummary, passage.content, activeTabIdx, currentItemState);
+    // 활성 유닛·단계·목표는 서버가 소유한다 (0719 설계). 클라이언트는 미러링하지 않는다.
+    const res = await sendDAMessage(session.id, phase, text, passage.content);
 
     if (res.error) {
       setChatError(res.error);
@@ -423,15 +407,6 @@ export default function DASession({
         [activeItemKey]: (prev[activeItemKey] ?? []).filter((m) => m.id !== tempId),
       }));
     } else {
-      setItemStates((prev) => ({
-        ...prev,
-        [activeItemKey]: {
-          identification: res.updated_state.item_identification_cumulative,
-          verbalization: res.updated_state.item_verbalization_cumulative,
-          step: res.updated_state.current_step,
-        },
-      }));
-
       setMessagesPerItem((prev) => ({
         ...prev,
         [activeItemKey]: [
@@ -441,33 +416,22 @@ export default function DASession({
         ],
       }));
 
-      // Reply is on screen — drop the "입력 중..." indicator now. The next-tab opening
-      // below (advanceDATab) is prep work for a still-locked tab, so it must not keep
-      // the current turn looking like it's still waiting.
       setChatLoading(false);
+      setDaState(res.updated_state);
 
-      if (res.tab_unlocked && !res.session_complete) {
-        // Item resolved — advance DB state and pre-generate next tab opening,
-        // but do NOT auto-switch; let student read the final message first
-        const advRes = await advanceDATab(session.id, phase);
-        if (advRes.error) {
-          setChatError(advRes.error);
-        } else if (advRes.state) {
-          setDaState(advRes.state);
-          const nextKey = advRes.state.priority_queue[advRes.state.current_item_idx];
-          if (nextKey && advRes.openingUtterance) {
-            setMessagesPerItem((prev) => ({
-              ...prev,
-              [nextKey]: [{ role: 'assistant', content: advRes.openingUtterance!, id: String(Date.now() + 2) }],
-            }));
-          }
-          showToast(`과제 ${activeTabIdx + 1} 완료! 과제 ${activeTabIdx + 2} 탭을 클릭해 다음 과제로 이동하세요.`, 'success');
+      // 탭 전환은 서버 엔진이 이미 처리했다. 새 탭의 첫 발화만 그 탭에 붙인다.
+      // 자동으로 넘기지 않고, 학생이 마지막 메시지를 읽은 뒤 직접 이동하게 둔다.
+      if (res.tab_unlocked && res.next_opening) {
+        const nextKey = res.updated_state.priority_queue[res.updated_state.current_item_idx];
+        if (nextKey) {
+          setMessagesPerItem((prev) => ({
+            ...prev,
+            [nextKey]: [{ role: 'assistant', content: res.next_opening!, id: String(Date.now() + 2) }],
+          }));
         }
+        showToast(`과제 ${activeTabIdx + 1} 완료! 과제 ${activeTabIdx + 2} 탭을 클릭해 다음 과제로 이동하세요.`, 'success');
       } else if (res.session_complete) {
-        setDaState(res.updated_state);
         showToast('모든 과제를 완료했습니다! 다음 단계로 이동하세요.', 'success');
-      } else {
-        setDaState(res.updated_state);
       }
     }
 

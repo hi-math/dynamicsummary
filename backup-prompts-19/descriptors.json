@@ -13,9 +13,14 @@
           "signal": "원문 단락 중 main point가 summary에 나타나지 않음"
         },
         {
-          "key": "importance_misjudgment",
-          "definition": "정보의 중요도를 잘못 판단하여, 핵심이 아닌 정보를 핵심으로 다룸",
+          "key": "idea_unit_misidentification",
+          "definition": "핵심이 아닌 정보를 핵심으로 잘못 선별함",
           "signal": "summary가 강조하는 내용이 원문에서는 부차적 정보임"
+        },
+        {
+          "key": "superordination_failure",
+          "definition": "열거 항목을 상위 개념으로 통합하지 못하고 그대로 나열함",
+          "signal": "원문의 열거가 상위 개념으로 묶이지 않고 그대로 옮겨짐"
         }
       ]
     },
@@ -32,14 +37,14 @@
           "signal": "summary에 예시, 수치, 세부 설명 등이 main idea와 함께 포함됨"
         },
         {
-          "key": "superordination_failure",
-          "definition": "열거 항목을 상위 개념으로 통합하지 못하고 그대로 나열함",
-          "signal": "원문의 열거가 상위 개념으로 묶이지 않고 그대로 옮겨짐"
-        },
-        {
           "key": "redundant_inclusion",
           "definition": "중복된 정보가 반복 포함됨",
           "signal": "같은 내용이 서로 다른 표현으로 두 번 이상 나타남"
+        },
+        {
+          "key": "source_length_proximity",
+          "definition": "전반적 압축 시도 부재. 정보량이 원문과 지나치게 유사함",
+          "signal": "summary의 정보량/길이가 원문 대비 충분히 축약되지 않음"
         }
       ]
     },
@@ -56,9 +61,9 @@
           "signal": "원문에 있는 내용인데 의미가 다르게 표현됨"
         },
         {
-          "key": "unsupported_addition",
-          "definition": "원문에 근거가 없는 내용이 추가됨 (학생의 견해·평가·추론, 원문에 없는 사실 진술 등)",
-          "signal": "원문에서 확인되지 않는 내용이 사실처럼 또는 평가적 표현으로 서술됨"
+          "key": "personal_opinion_insertion",
+          "definition": "원문에 없는 학생 자신의 견해·평가·추론이 포함됨",
+          "signal": "원문에 없는 내용이 사실처럼 또는 평가적 표현으로 서술됨"
         }
       ]
     },
@@ -94,19 +99,29 @@
       "subcategory": "task-specific",
       "descriptors": [
         {
-          "key": "paragraph_format_issue",
-          "definition": "한 단락(paragraph) 형식 요건을 지키지 않음",
-          "signal": "여러 단락으로 나뉘거나, 목록·개조식으로 작성되는 등 한 단락 산문 형식에서 벗어남"
+          "key": "topic_sentence_absence",
+          "definition": "전체 내용을 포괄하는 topic sentence가 없음",
+          "signal": "summary의 첫 부분에 전체 내용을 포괄하는 문장이 없음"
         },
         {
-          "key": "topic_sentence_issue",
-          "definition": "전체 내용을 포괄하는 topic sentence가 없거나, 있어도 main idea를 충분히 포괄하지 못함",
-          "signal": "도입부에 전체를 안내하는 문장이 없거나, 있으나 일부 내용만 다루거나 부정확함"
+          "key": "topic_sentence_inadequacy",
+          "definition": "topic sentence가 있지만 main idea를 충분히 포괄하지 못함",
+          "signal": "topic sentence가 있으나 부분적 내용만 다룸 또는 부정확함"
         },
         {
-          "key": "organization_and_coherence_issue",
-          "definition": "supporting sentences가 주제를 일관되게 뒷받침하지 못하거나, 문장 간 흐름이 끊기거나, 마무리가 없거나 불충분함",
-          "signal": "문장들이 주제와 겉돌거나 단순 나열에 그침, 문장 간 연결이 부자연스러움, 마무리 없이 갑자기 끝남"
+          "key": "concluding_sentence_absence",
+          "definition": "concluding sentence가 없거나 불충분함",
+          "signal": "summary가 마무리 없이 갑자기 끝남"
+        },
+        {
+          "key": "supporting_structure_weakness",
+          "definition": "supporting sentences가 topic sentence와 논리적으로 연결되지 않음",
+          "signal": "supporting 문장들이 topic sentence를 뒷받침하지 않거나 무관함"
+        },
+        {
+          "key": "internal_coherence_failure",
+          "definition": "문장 간 논리적 흐름이 끊기거나 나열식으로 구성됨",
+          "signal": "문장 간 연결이 부자연스럽거나 단순 나열에 그침"
         }
       ]
     },

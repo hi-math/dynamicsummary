@@ -16,13 +16,13 @@ const SYSTEM_PROMPTS: PromptDef[] = [
 // ── 2. 과제 평가 프롬프트 — 학생 산출물·응답 진단/판정 (학생 비노출) ──
 const EVAL_PROMPTS: PromptDef[] = [
   { key: 'prompt_assessor',          label: 'Assessor',          desc: '학생 요약 진단 → mediation plan' },
-  { key: 'prompt_assessor_verifier', label: 'Assessor Verifier', desc: 'Assessor 출력 검증 (LLM-as-a-judge)' },
   { key: 'prompt_analysis',          label: 'Analysis',          desc: '학생 응답 분류 + identification·verbalization 판정', tag: 'new' },
   { key: 'prompt_classifier',        label: 'Classifier',        desc: 'Analysis 노드로 병합됨 (코드가 읽지 않음)', tag: 'unused' },
   { key: 'prompt_evaluator',         label: 'Evaluator',         desc: 'Analysis 노드로 병합됨 (코드가 읽지 않음)', tag: 'unused' },
 ];
 
 // ── 3. 채팅 프롬프트 — 학생에게 보이는 발화 생성 및 대화 흐름 제어 ──
+// 지식자료(knowledge)는 과제별로 다르므로 여기가 아니라 지문 관리 탭에서 편집한다.
 const CHAT_PROMPTS: PromptDef[] = [
   { key: 'prompt_mediator_common',    label: 'Mediator (공통)',    desc: '발화 생성 — 항목 공통 규칙' },
   { key: 'prompt_main_idea_coverage', label: 'main_idea_coverage', desc: '핵심 내용 선별 — 1~5단계 mediation' },

@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS api_settings (
   openai_key TEXT NOT NULL DEFAULT '',
   openai_model TEXT NOT NULL DEFAULT 'gpt-5.5',
   anthropic_key TEXT NOT NULL DEFAULT '',
-  anthropic_model TEXT NOT NULL DEFAULT 'claude-opus-4-7',
+  anthropic_model TEXT NOT NULL DEFAULT 'claude-opus-4-8',
   gemini_key TEXT NOT NULL DEFAULT '',
   gemini_model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS passages (
   cycle_key TEXT PRIMARY KEY CHECK (cycle_key IN ('cycle1', 'cycle2', 'cycle3', 'cycle4')),
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL DEFAULT '',
+  -- Assessor 참조자료 (진단 전용, 학생 비노출)
+  -- 모범 요약문은 여기가 아니라 knowledge_<cycle> 프롬프트 자산에 들어간다.
+  idea_units JSONB NOT NULL DEFAULT '[]',   -- [{ id, text, importance: core|supporting|peripheral }]
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -79,10 +82,7 @@ CREATE TABLE IF NOT EXISTS da_session_state (
   item_verbalization_cumulative BOOLEAN NOT NULL DEFAULT FALSE,
   resolutions JSONB NOT NULL DEFAULT '{}',             -- { item_key: boolean }
   session_complete BOOLEAN NOT NULL DEFAULT FALSE,
-  diagnosis_confidence TEXT CHECK (diagnosis_confidence IN ('high','medium','low')),
-  assessor_output JSONB,                               -- final adopted Assessor output
-  assessor_outputs_all JSONB,                          -- all Assessor attempts (for low confidence)
-  verifier_notes_all JSONB,                            -- all Verifier notes
+  assessor_output JSONB,                               -- Assessor diagnosis
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (student_id, phase)
@@ -168,7 +168,7 @@ VALUES ('admin', '관리자', 'admin', NULL, 'cycle1_draft')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO api_settings (id, provider, openai_key, openai_model, anthropic_key, anthropic_model, gemini_key, gemini_model)
-VALUES (1, 'openai', '', 'gpt-5.5', '', 'claude-opus-4-7', '', 'gemini-2.5-flash')
+VALUES (1, 'openai', '', 'gpt-5.5', '', 'claude-opus-4-8', '', 'gemini-2.5-flash')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO prompts (id, system_prompt, da_prompt)
@@ -195,7 +195,6 @@ ON CONFLICT (cycle_key) DO NOTHING;
 INSERT INTO prompt_assets (key, content) VALUES
   ('prompt_system', ''),
   ('prompt_assessor', ''),
-  ('prompt_assessor_verifier', ''),
   ('prompt_analysis', ''),
   ('prompt_confirmation', ''),
   ('prompt_classifier', ''),
@@ -209,11 +208,9 @@ INSERT INTO prompt_assets (key, content) VALUES
   ('prompt_paraphrasing', ''),
   ('prompt_organization', ''),
   ('prompt_language_use', ''),
-  ('knowledge_common', ''),
-  ('knowledge_main_idea_coverage', ''),
-  ('knowledge_condensation', ''),
-  ('knowledge_content_accuracy', ''),
-  ('knowledge_paraphrasing', ''),
-  ('knowledge_organization', ''),
-  ('knowledge_language_use', '')
+  -- 과제별 지식자료 (지문 관리 탭에서 편집, Mediator에 knowledge_active 로 주입)
+  ('knowledge_cycle1', ''),
+  ('knowledge_cycle2', ''),
+  ('knowledge_cycle3', ''),
+  ('knowledge_cycle4', '')
 ON CONFLICT (key) DO NOTHING;

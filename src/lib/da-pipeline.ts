@@ -1,16 +1,29 @@
+// DA 파이프라인 — Assessor(진단) + 턴 엔진.
+//
+// 역할 분담:
+//   da-state.ts  상태 전이·라우팅 (LLM 없음, 순수 함수)
+//   da-nodes.ts  LLM 노드 3개 (Analysis / Mediator / Confirmation)
+//   이 파일       둘을 엮는 오케스트레이션 + Assessor
+//
+// 프롬프트(prompt_mediator_common / prompt_analysis)가 "코드가 결정한다"고 명시한
+// 항목은 모두 코드에 있고, Mediator 는 발화 생성만 한다.
+
 import { callLLMNode } from './ai';
-import { PRIORITY_CONFIG } from './priority-config';
 import type {
   APISettings,
   AssessorOutput,
   DASessionState,
-  TurnResult,
-  Classification,
-  DiagnosisConfidence,
+  ResponseContext,
+  UnitOutcome,
 } from '@/types';
 import descriptorsData from '@/data/descriptors.json';
+import {
+  advanceTo, applyAnalysis, checkpointReached, closeUnit, designateSecondaryTab,
+  isTerminalStep, newUnit, nextDestination, unitOf,
+} from './da-state';
+import { runAnalysis, runConfirmation, runMediator, type UnitTurn } from './da-nodes';
 
-// ─── Descriptor prompt block ──────────────────────────────────────────────────
+// ─── Assessor ─────────────────────────────────────────────────────────────────
 
 function buildDescriptorBlock(): string {
   return descriptorsData.items
@@ -23,527 +36,372 @@ function buildDescriptorBlock(): string {
     .join('\n\n');
 }
 
-// ─── Global system prompt (과제 전체 설명) ────────────────────────────────────
-// admin의 `prompt_system` 값을 모든 노드의 시스템 프롬프트 맨 앞에 공통으로 주입한다.
-// 비어 있으면 노드 프롬프트를 그대로 사용한다.
 function prependSystem(prompts: Record<string, string>, sysPrompt: string): string {
   const overview = prompts['prompt_system']?.trim();
   return overview ? `${overview}\n\n---\n\n${sysPrompt}` : sysPrompt;
 }
 
-// ─── Priority queue calculation ───────────────────────────────────────────────
+// 계획이 없을 때만 쓰는 순서 폴백 (higher-order concerns first).
+const HOC_ORDER = [
+  'main_idea_coverage', 'content_accuracy', 'organization',
+  'condensation', 'paraphrasing', 'language_use',
+];
 
-export function calculatePriorityQueue(assessorOutput: AssessorOutput): string[] {
+export function tabsFromPlan(assessorOutput: AssessorOutput): string[] {
+  const targets = assessorOutput?.mediation_targets;
+  if (targets?.length) {
+    // Assessor 가 Step 2 에서 정한 순서를 그대로 쓴다. 재계산하지 않는다.
+    return [...targets].sort((a, b) => a.tab - b.tab).map((t) => t.item).slice(0, 3);
+  }
   if (!assessorOutput?.items) return [];
-  const cfg = PRIORITY_CONFIG;
-
-  const scores = Object.entries(assessorOutput.items).map(([key, item]) => {
-    let multiplier = cfg.groupMultipliers[key] ?? 1.0;
-    if (key === 'language_use' && item.affects_meaning) multiplier = 2.0;
-
-    const score = item.detected_descriptors.reduce(
-      (sum, d) => sum + (cfg.severityWeights[d.severity] ?? 1),
-      0,
-    ) * multiplier;
-
-    return { key, score };
-  });
-
-  scores.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    const aIdx = cfg.tieBreakOrder.indexOf(a.key);
-    const bIdx = cfg.tieBreakOrder.indexOf(b.key);
-    return (aIdx < 0 ? 999 : aIdx) - (bIdx < 0 ? 999 : bIdx);
-  });
-
-  return scores
-    .filter((s) => s.score > 0)
-    .slice(0, 3)
-    .map((s) => s.key);
+  return HOC_ORDER
+    .filter((k) => (assessorOutput.items[k]?.detected_descriptors?.length ?? 0) > 0)
+    .slice(0, 3);
 }
 
-// ─── Initial state factory ────────────────────────────────────────────────────
+export type AssessorRefs = {
+  ideaUnits?: { id: string; text: string; importance: string }[];
+};
 
-export function createInitialState(): DASessionState {
+function assessorSourceBlock(
+  summary: string,
+  passageContent: string,
+  prompts: Record<string, string>,
+  refs: AssessorRefs,
+): string {
+  const knowledge = prompts['knowledge_active']?.trim();
+  const knowledgeBlock = knowledge ? `\n\n[CYCLE KNOWLEDGE RESOURCE]\n${knowledge}` : '';
+  const iuBlock = refs.ideaUnits?.length
+    ? '\n\n[IU TABLE]\n' + refs.ideaUnits.map((u) => `- (${u.importance}) ${u.text}`).join('\n')
+    : '';
+  return `[SOURCE TEXT]\n${passageContent}${knowledgeBlock}${iuBlock}\n\n[STUDENT SUMMARY]\n${summary}`;
+}
+
+function parseJson(raw: string, label: string): Record<string, unknown> {
+  const json = raw.match(/\{[\s\S]*\}/)?.[0];
+  if (!json) throw new Error(`${label} returned non-JSON output: ${raw.slice(0, 200)}`);
+  return JSON.parse(json);
+}
+
+// 턴 2 의 severity 맵을 턴 1 의 items 진단에 병합한다 (downstream 이 detected_descriptors[].severity 를 읽음).
+function mergeSeverity(
+  items: AssessorOutput['items'],
+  severity: Record<string, Record<string, string>> | undefined,
+): AssessorOutput['items'] {
+  if (!severity) return items;
+  for (const [item, diag] of Object.entries(items ?? {})) {
+    for (const d of diag.detected_descriptors ?? []) {
+      const s = severity[item]?.[d.key];
+      if (s === 'high' || s === 'medium' || s === 'low') d.severity = s;
+    }
+  }
+  return items;
+}
+
+// 턴 1 — 진단 + 다룰 항목 선택 (심각도·순서 없음).
+async function runAssessorSelect(
+  summary: string, passageContent: string,
+  prompts: Record<string, string>, api: APISettings, refs: AssessorRefs,
+): Promise<{ items: AssessorOutput['items']; selected_items: unknown[] }> {
+  const sysPrompt = prompts['prompt_assessor_select']?.trim() ||
+    `Diagnose the summary against the 6 items / 16 descriptors below and select up to 3 items
+to mediate (with evidence). Do NOT assign severity or order. Respond ONLY with JSON:
+{ "items": {...}, "selected_items": [...] }
+
+## Descriptor Reference
+${buildDescriptorBlock()}`;
+  const userInput = assessorSourceBlock(summary, passageContent, prompts, refs);
+  const parsed = parseJson(await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api), 'Assessor(select)');
   return {
-    priority_queue: [],
-    current_item_idx: 0,
-    current_step: 1,
-    item_identification_cumulative: false,
-    item_verbalization_cumulative: false,
-    item_resolution_pending: false,
-    resolutions: {},
-    session_complete: false,
-    diagnosis_confidence: null,
-    assessor_output: null,
+    items: (parsed.items ?? {}) as AssessorOutput['items'],
+    selected_items: (parsed.selected_items ?? []) as unknown[],
   };
 }
 
-export function resetItemState(state: DASessionState): DASessionState {
+// 턴 2 — 심각도 산출 + 제시 순서 + 목표. 턴 1 출력을 입력으로 받는다.
+async function runAssessorOrder(
+  turn1: { items: AssessorOutput['items']; selected_items: unknown[] },
+  summary: string, passageContent: string,
+  prompts: Record<string, string>, api: APISettings, refs: AssessorRefs,
+): Promise<{ severity?: Record<string, Record<string, string>>; mediation_targets: AssessorOutput['mediation_targets'] }> {
+  const sysPrompt = prompts['prompt_assessor_order']?.trim() ||
+    `Given the Turn-1 diagnosis, assign severity to each detected descriptor, order the selected
+items (higher-order concerns first), and define PI/PSV goals (+ optional secondary). Respond ONLY
+with JSON: { "severity": {...}, "mediation_targets": [...] }`;
+  const userInput = `${assessorSourceBlock(summary, passageContent, prompts, refs)}
+
+[TURN 1 — DIAGNOSIS]
+${JSON.stringify({ items: turn1.items, selected_items: turn1.selected_items }, null, 2)}`;
+  const parsed = parseJson(await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api), 'Assessor(order)');
   return {
-    ...state,
-    current_step: 1,
-    item_identification_cumulative: false,
-    item_verbalization_cumulative: false,
-    item_resolution_pending: false,
+    severity: parsed.severity as Record<string, Record<string, string>> | undefined,
+    mediation_targets: (parsed.mediation_targets ?? []) as AssessorOutput['mediation_targets'],
   };
 }
 
-// ─── Assessor ─────────────────────────────────────────────────────────────────
-
+/**
+ * Assessor — 2턴 파이프라인.
+ *   턴 1(select): 진단 + 항목 선택 + 근거   →  턴 2(order): 심각도 + 순서 + 목표.
+ * prompt_assessor_select 가 없으면 구 단일 프롬프트(prompt_assessor)로 폴백한다.
+ */
 export async function runAssessor(
   summary: string,
   passageContent: string,
   prompts: Record<string, string>,
   api: APISettings,
+  refs: AssessorRefs = {},
 ): Promise<AssessorOutput> {
-  const descriptorBlock = buildDescriptorBlock();
-
-  const sysPrompt = prompts['prompt_assessor'] || `You are an Assessor in a Dynamic Assessment tutoring system for EFL summary writing.
-Diagnose the student's summary against the 6 evaluation areas and 19 descriptors listed below.
-
-CRITICAL: Your entire response must be a single JSON object whose FIRST and ONLY top-level key is "items".
-Do NOT place item keys at the top level. Always wrap them inside "items".
-
-For each item, include:
-- score: integer 1-5 (1=very poor, 5=excellent)
-- detected_descriptors: array of descriptors that apply (empty array [] if none)
-- score_rationale: 1-2 sentence explanation of why this score was given
-- feedback_focus: the exact sentence or phrase in the student text that is most problematic
-- judgment_evidence: specific evidence from the passage showing what the student missed or got wrong
-- affects_meaning: true/false (language_use item only)
-
-Respond ONLY with valid JSON:
-{
-  "items": {
-    "<item_key>": {
-      "score": 3,
-      "detected_descriptors": [{ "key": "...", "severity": "high|medium|low", "evidence": { "problem_location": "...", "evidence_text": "...", "missing_content": "..." } }],
-      "score_rationale": "...",
-      "feedback_focus": "...",
-      "judgment_evidence": "...",
-      "affects_meaning": true
+  // ── 폴백: 2턴 프롬프트가 없으면 단일 호출 ──
+  if (!prompts['prompt_assessor_select']?.trim() && prompts['prompt_assessor']?.trim()) {
+    const userInput = assessorSourceBlock(summary, passageContent, prompts, refs);
+    const parsed = parseJson(
+      await callLLMNode(prependSystem(prompts, prompts['prompt_assessor']), userInput, api),
+      'Assessor',
+    );
+    if (!parsed.items) {
+      const ITEM_KEYS = new Set(descriptorsData.items.map((i) => i.key));
+      if (Object.keys(parsed).some((k) => ITEM_KEYS.has(k))) return { items: parsed } as AssessorOutput;
+      throw new Error('Assessor output missing "items".');
     }
+    return parsed as unknown as AssessorOutput;
   }
-}
 
-## Descriptor Reference
-${descriptorBlock}`;
-
-  const userInput = `[PASSAGE]\n${passageContent}\n\n[STUDENT SUMMARY]\n${summary}`;
-
-  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
-  const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) throw new Error(`Assessor returned non-JSON output: ${raw.slice(0, 200)}`);
-  const parsed = JSON.parse(json);
-  // Normalise: some models return items at top level instead of nested under "items"
-  if (!parsed?.items) {
-    const ITEM_KEYS = new Set(['main_idea_coverage','condensation','content_accuracy','paraphrasing','organization','language_use']);
-    const topKeys = Object.keys(parsed ?? {});
-    if (topKeys.some((k) => ITEM_KEYS.has(k))) {
-      return { items: parsed } as AssessorOutput;
-    }
-    throw new Error(`Assessor output missing "items" field. Got keys: ${topKeys.join(', ') || '(none)'}`);
-  }
-  return parsed as AssessorOutput;
-}
-
-// ─── Assessor Verifier ────────────────────────────────────────────────────────
-
-type VerifierResult = {
-  pass: boolean;
-  notes: string;
-};
-
-export async function runAssessorVerifier(
-  assessorOutput: AssessorOutput,
-  summary: string,
-  passageContent: string,
-  prompts: Record<string, string>,
-  api: APISettings,
-  previousNotes?: string,
-): Promise<VerifierResult> {
-  const sysPrompt = prompts['prompt_assessor_verifier'] || `You are an Assessor Verifier (LLM-as-a-judge) in a DA tutoring system.
-Review the Assessor's diagnosis for:
-1. Evidence validity — does each detected descriptor have clear, specific textual evidence?
-2. Item selection appropriateness — are the selected items truly present in the student's text?
-3. Priority justification — are high-severity ratings warranted?
-
-Respond ONLY with valid JSON:
-{ "pass": true|false, "notes": "brief explanation of issues (if fail) or confirmation (if pass)" }`;
-
-  const userInput = `[PASSAGE]\n${passageContent}\n\n[STUDENT SUMMARY]\n${summary}\n\n[ASSESSOR OUTPUT]\n${JSON.stringify(assessorOutput, null, 2)}${previousNotes ? `\n\n[PREVIOUS VERIFICATION NOTES]\n${previousNotes}` : ''}`;
-
-  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
-  const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) return { pass: true, notes: 'parse error — defaulting to pass' };
-  return JSON.parse(json) as VerifierResult;
-}
-
-// ─── Session initialization: Assessor → Verifier (max 2) → Priority ──────────
-
-function buildInitState(finalOutput: AssessorOutput, confidence: DiagnosisConfidence): DASessionState {
+  // ── 2턴 ──
+  const turn1 = await runAssessorSelect(summary, passageContent, prompts, api, refs);
+  const turn2 = await runAssessorOrder(turn1, summary, passageContent, prompts, api, refs);
   return {
-    priority_queue: calculatePriorityQueue(finalOutput),
-    current_item_idx: 0,
-    current_step: 1,
-    item_identification_cumulative: false,
-    item_verbalization_cumulative: false,
-    item_resolution_pending: false,
-    resolutions: {},
-    session_complete: false,
-    diagnosis_confidence: confidence,
-    assessor_output: finalOutput,
+    items: mergeSeverity(turn1.items, turn2.severity),
+    mediation_targets: turn2.mediation_targets,
   };
 }
+
+// ─── 세션 상태 ────────────────────────────────────────────────────────────────
+
+export function createInitialState(): DASessionState {
+  return {
+    priority_queue: [],
+    current_item_idx: 0,
+    active_unit: newUnit(1, '', 'primary'),
+    secondary_designated_tab: null,
+    secondary_used: false,
+    closing_checkpoint_reached: false,
+    session_started_at: null,
+    closing_phase: false,
+    awaiting_confirmation: false,
+    completed_units: [],
+    resolutions: {},
+    session_complete: false,
+    assessor_output: null,
+  };
+}
+
+function buildInitState(assessor: AssessorOutput): DASessionState {
+  const queue = tabsFromPlan(assessor);
+  return {
+    ...createInitialState(),
+    priority_queue: queue,
+    active_unit: newUnit(1, queue[0] ?? '', 'primary'),
+    // 보조 유닛은 Assessor 출력이 확정된 지금 한 번만 지정한다 (탭 3개면 없음).
+    secondary_designated_tab: designateSecondaryTab(assessor),
+    session_started_at: new Date().toISOString(),
+    assessor_output: assessor,
+  };
+}
+
+export type TurnContext = {
+  sourceText: string;
+  cycleKnowledge: string;
+};
 
 export async function initDASession(
   summary: string,
   passageContent: string,
   prompts: Record<string, string>,
   api: APISettings,
-): Promise<{
-  state: DASessionState;
-  assessorOutputsAll: AssessorOutput[];
-  verifierNotesAll: string[];
-  confidence: DiagnosisConfidence;
-  openingUtterance: string;
-}> {
-  const assessorOutputsAll: AssessorOutput[] = [];
-  const verifierNotesAll: string[] = [];
-
-  // 1st Assessor
-  const assessor1 = await runAssessor(summary, passageContent, prompts, api);
-  assessorOutputsAll.push(assessor1);
-
-  // Speculatively generate the opening message from assessor1 IN PARALLEL with the
-  // verifier. On the common high-confidence path (verifier passes) assessor1 is the
-  // final diagnosis, so the opening is already valid and its latency is fully hidden
-  // behind the verifier call. Errors are swallowed → we regenerate below if needed.
-  const speculativeState = buildInitState(assessor1, 'high');
-  const openingPromise = generateOpeningMessage(speculativeState, prompts, api).catch(() => null);
-
-  // 1st Verifier (runs concurrently with the speculative opening above)
-  const verifier1 = await runAssessorVerifier(assessor1, summary, passageContent, prompts, api);
-  verifierNotesAll.push(verifier1.notes);
-
-  let finalOutput: AssessorOutput;
-  let confidence: DiagnosisConfidence;
-
-  if (verifier1.pass) {
-    finalOutput = assessor1;
-    confidence = 'high';
-  } else {
-    // 2nd Assessor (with verifier notes as extra context)
-    const assessor2 = await runAssessor(summary + `\n\n[Verifier notes: ${verifier1.notes}]`, passageContent, prompts, api);
-    assessorOutputsAll.push(assessor2);
-
-    // 2nd Verifier
-    const verifier2 = await runAssessorVerifier(assessor2, summary, passageContent, prompts, api, verifier1.notes);
-    verifierNotesAll.push(verifier2.notes);
-
-    if (verifier2.pass) {
-      finalOutput = assessor2;
-      confidence = 'medium';
-    } else {
-      // 2-fail fallback: adopt 1st output
-      finalOutput = assessor1;
-      confidence = 'low';
-    }
-  }
-
-  const state = buildInitState(finalOutput, confidence);
-
-  // Reuse the speculative opening when the final priority queue matches the one it was
-  // generated from (i.e. finalOutput === assessor1); otherwise regenerate for assessor2.
-  const speculativeOpening = await openingPromise;
-  const openingUtterance = (finalOutput === assessor1 && speculativeOpening)
-    ? speculativeOpening
-    : await generateOpeningMessage(state, prompts, api);
-
-  return { state, assessorOutputsAll, verifierNotesAll, confidence, openingUtterance };
+  refs: AssessorRefs = {},
+): Promise<{ state: DASessionState; openingUtterance: string }> {
+  const assessor = await runAssessor(summary, passageContent, prompts, api, refs);
+  const state = buildInitState(assessor);
+  const openingUtterance = await mediate(state, 'opening', [], undefined, {
+    sourceText: passageContent,
+    cycleKnowledge: prompts['knowledge_active'] ?? '',
+  }, prompts, api);
+  return { state, openingUtterance };
 }
 
-// ─── One-turn pipeline ────────────────────────────────────────────────────────
-
-// Combined Classifier + Evaluator (single LLM call).
-// Merging the two judgment nodes halves the common on_track turn latency
-// (previously Classifier → Evaluator → Mediator = 3 serial calls; now 2).
-type AnalysisResult = {
-  classification: Classification;
-  identification_success: boolean;
-  remedial_verbalization_success: boolean;
-};
-
-async function runAnalysis(
-  studentMessage: string,
-  currentItem: string,
+// Mediator 호출 래퍼 — 세션 수준 정보를 함께 넘긴다.
+async function mediate(
   state: DASessionState,
+  ctx: ResponseContext,
+  history: UnitTurn[],
+  latestLearnerResponse: string | undefined,
+  turnCtx: TurnContext,
   prompts: Record<string, string>,
   api: APISettings,
-): Promise<AnalysisResult> {
-  const sysPrompt = prompts['prompt_analysis'] || `You are the analysis node in a DA tutoring pipeline. In ONE pass you do two jobs:
+): Promise<string> {
+  return runMediator(
+    state.assessor_output,
+    state.active_unit,
+    ctx,
+    {
+      latestLearnerResponse,
+      history,
+      completedUnits: state.completed_units,
+      totalTabs: state.priority_queue.length,
+      secondaryDesignated: state.secondary_designated_tab != null,
+      secondaryUsed: state.secondary_used,
+      checkpointReached: state.closing_checkpoint_reached,
+      sourceText: turnCtx.sourceText,
+      cycleKnowledge: turnCtx.cycleKnowledge,
+    },
+    prompts,
+    api,
+  );
+}
 
-(1) CLASSIFY the student's response into exactly one of:
-- "on_track": attempts to address the current writing problem (even partially)
-- "confusion": explicit signal of not knowing (e.g., "I don't know", "I'm not sure what to do")
-- "off_topic": unrelated to the current tutoring flow
+// ─── 턴 처리 ──────────────────────────────────────────────────────────────────
 
-(2) EVALUATE two boolean conditions (only meaningful when classification is "on_track"):
-- identification_success: Did the student identify their own writing problem in their own words?
-- remedial_verbalization_success: Did the student verbalize HOW to fix the problem in their own words?
+export type TurnResult = {
+  utterance: string;          // 현재 탭에 표시할 발화
+  next_opening?: string;      // 다음 탭이 열렸을 때 그 탭에 표시할 첫 발화
+  updated_state: DASessionState;
+  classification: 'on_track' | 'confusion' | 'off_topic' | 'confirmation' | 'closing';
+  tab_unlocked: boolean;
+  session_complete: boolean;
+};
 
-Cumulative rules for (2):
-- If identification_already_true=true, set identification_success=true unconditionally (do not re-judge).
-- If verbalization_already_true=true, set remedial_verbalization_success=true unconditionally.
-- Only judge conditions still false. If classification is not "on_track", keep any already-true flags but do not newly grant either condition.
+/**
+ * 유닛을 닫고 다음 행선지로 이동시킨 뒤 그곳의 첫 발화를 만든다.
+ * 다음 탭으로 넘어간 경우에만 발화를 nextOpening 으로 분리한다 —
+ * 보조 유닛과 종료 안내는 같은 탭에 이어서 표시되기 때문이다.
+ */
+async function closeAndAdvance(
+  state: DASessionState,
+  outcome: UnitOutcome,
+  principle: string,
+  turnCtx: TurnContext,
+  prompts: Record<string, string>,
+  api: APISettings,
+): Promise<{ state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean }> {
+  const closed = state.active_unit;
+  let next = closeUnit(state, outcome, principle);
+  const dest = nextDestination(next, closed, outcome);
+  next = advanceTo(next, dest);
 
-Respond ONLY with valid JSON:
-{ "classification": "on_track"|"confusion"|"off_topic", "identification_success": true|false, "remedial_verbalization_success": true|false }`;
-
-  const userInput = JSON.stringify({
-    current_item: currentItem,
-    current_step: state.current_step,
-    student_message: studentMessage,
-    identification_already_true: state.item_identification_cumulative,
-    verbalization_already_true: state.item_verbalization_cumulative,
-    assessor_evidence: state.assessor_output?.items[currentItem] ?? null,
-  });
-
-  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
-  const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) {
-    return { classification: 'on_track', identification_success: false, remedial_verbalization_success: false };
+  if (dest.kind === 'closing') {
+    const utterance = await mediate(next, 'session_closing_invite', [], undefined, turnCtx, prompts, api);
+    return { state: next, sameTabText: utterance, tabUnlocked: false };
   }
-  const parsed = JSON.parse(json);
+  const utterance = await mediate(next, 'opening', [], undefined, turnCtx, prompts, api);
+  if (dest.kind === 'next_tab') {
+    return { state: next, sameTabText: '', nextOpening: utterance, tabUnlocked: true };
+  }
+  // 보조 유닛 — 같은 탭에서 이어진다.
+  return { state: next, sameTabText: utterance, tabUnlocked: false };
+}
+
+/** closeAndAdvance 결과를 TurnResult 로 합친다. */
+function toResult(
+  adv: { state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean },
+  leadingText: string,
+  classification: TurnResult['classification'],
+): TurnResult {
+  const parts = [leadingText, adv.sameTabText].filter(Boolean);
   return {
-    classification: (parsed.classification ?? 'on_track') as Classification,
-    identification_success: parsed.identification_success === true,
-    remedial_verbalization_success: parsed.remedial_verbalization_success === true,
+    utterance: parts.join('\n\n'),
+    next_opening: adv.nextOpening,
+    updated_state: adv.state,
+    classification,
+    tab_unlocked: adv.tabUnlocked,
+    session_complete: adv.state.closing_phase,
   };
 }
 
-async function runReexplainer(
-  studentMessage: string,
-  currentItem: string,
-  state: DASessionState,
-  prompts: Record<string, string>,
-  api: APISettings,
-): Promise<string> {
-  const sysPrompt = prompts['prompt_reexplainer'] || `You are a Reexplainer in a DA tutoring pipeline.
-The student has shown confusion about the current writing problem.
-Generate a brief re-explanation guidance (1-2 sentences) that the Mediator can use to re-explain the problem from a different angle.
-Respond ONLY with a plain text explanation guidance (no JSON).`;
-
-  const userInput = JSON.stringify({
-    current_item: currentItem,
-    current_step: state.current_step,
-    student_message: studentMessage,
-    assessor_evidence: state.assessor_output?.items[currentItem] ?? null,
-  });
-
-  return await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
-}
-
-async function runDeflector(
-  studentMessage: string,
-  currentItem: string,
-  state: DASessionState,
-  prompts: Record<string, string>,
-  api: APISettings,
-): Promise<string> {
-  const sysPrompt = prompts['prompt_deflector'] || `You are a Deflector in a DA tutoring pipeline.
-The student's message is off-topic. Handle one of three cases:
-1. Completely irrelevant: redirect politely back to the task.
-2. Mentions another item in priority_queue: acknowledge briefly, redirect to current item.
-3. Mentions out-of-scope writing issue: acknowledge, explain scope, redirect.
-Generate a brief tutor response (1-2 sentences). Respond with plain text only (no JSON).`;
-
-  const userInput = JSON.stringify({
-    current_item: currentItem,
-    priority_queue: state.priority_queue,
-    student_message: studentMessage,
-  });
-
-  return await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
-}
-
-async function runMediator(
-  studentMessage: string,
-  currentItem: string,
-  state: DASessionState,
-  prompts: Record<string, string>,
-  api: APISettings,
-  mode: 'normal' | 'resolution' | 'reexplain' | 'closing' | 'opening',
-  evalResult?: { identification_success: boolean; remedial_verbalization_success: boolean },
-  reexplainerGuidance?: string,
-): Promise<string> {
-  // B-5: Mediator system prompt = mediator_common + item + knowledge_common + knowledge_item
-  const itemKey = currentItem;
-  const systemParts = [
-    prompts['prompt_mediator_common'] || '',
-    prompts[`prompt_${itemKey}`] || '',
-    prompts['knowledge_common'] || '',
-    prompts[`knowledge_${itemKey}`] || '',
-  ].filter(Boolean).join('\n\n---\n\n');
-
-  const sysPrompt = systemParts || `You are a DA tutor. Generate a natural, encouraging tutor utterance (1-3 sentences).
-- mode "opening": generate a warm, casual opening question that introduces the item topic lightly — like "이번에는 [item topic]에 대해 같이 살펴볼까요?" — do not sound clinical or evaluative.
-- mode "normal": continue scaffolding the student toward identifying/verbalizing the problem.
-- mode "resolution": celebrate resolution, ask if student has questions before moving on.
-- mode "reexplain": re-explain the problem from a different angle using the provided guidance.
-- mode "closing": deliver final closing comment and guide student to click next tab or finish.
-Maintain a single, consistent tutor persona. Do NOT reveal internal node decisions.`;
-
-  const userInput = JSON.stringify({
-    current_item: itemKey,
-    current_step: state.current_step,
-    mode,
-    student_message: studentMessage,
-    assessor_evidence: state.assessor_output?.items[itemKey] ?? null,
-    eval_result: evalResult ?? null,
-    reexplainer_guidance: reexplainerGuidance ?? null,
-    resolution_status: state.resolutions,
-    tabs_remaining: state.priority_queue.length - 1 - state.current_item_idx,
-  });
-
-  return await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
-}
-
-// ─── Confirmation classifier (used when item_resolution_pending = true) ──────
-
-async function runConfirmationClassifier(
-  studentMessage: string,
-  prompts: Record<string, string>,
-  api: APISettings,
-): Promise<boolean> {
-  const sysPrompt = prompts['prompt_confirmation'] || `You are a classifier. The tutor just asked the student if they want to move on to the next task.
-Determine if the student's response is a CONFIRMATION (positive/agreeable) or NOT.
-Respond ONLY with valid JSON: { "confirming": true | false }
-Confirming examples: "네", "응", "갑시다", "넘어가요", "그래요", "알겠어요", "yes", "sure", "okay", "ok", "넘어가겠습니다"
-NOT confirming examples: "아니요", "잠깐만요", "궁금한 게 있어요", "no", "wait"`;
-
-  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), studentMessage, api);
-  const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) return false;
-  try { return JSON.parse(json).confirming === true; } catch { return false; }
-}
-
-// ─── Main one-turn entry point ────────────────────────────────────────────────
-
 export async function processTurn(
   state: DASessionState,
-  studentMessage: string,
-  summary: string,
-  passageContent: string,
+  learnerMessage: string,
+  latestTutorUtterance: string,
+  history: UnitTurn[],
+  turnCtx: TurnContext,
   prompts: Record<string, string>,
   api: APISettings,
 ): Promise<TurnResult> {
-  const currentItem = state.priority_queue[state.current_item_idx];
-  if (!currentItem) {
-    return {
-      utterance: '세션이 종료되었습니다.',
-      updated_state: { ...state, session_complete: true },
-      resolution_achieved: false,
-      tab_unlocked: false,
-      session_complete: true,
-      classification: 'on_track',
-    };
+  // 25분 체크포인트는 매 턴 갱신한다 (새 유닛 시작 금지용).
+  let s: DASessionState = {
+    ...state,
+    closing_checkpoint_reached:
+      state.closing_checkpoint_reached || checkpointReached(state.session_started_at),
+  };
+
+  // ── 종료 단계: 학생 질문에 직접 답한다 (DA 형식으로 만들지 않는다) ──
+  if (s.closing_phase) {
+    const utterance = await mediate(s, 'final_question_answer', history, learnerMessage, turnCtx, prompts, api);
+    return { utterance, updated_state: s, classification: 'closing', tab_unlocked: false, session_complete: false };
   }
 
-  let updatedState = { ...state };
-  let utterance: string;
+  // ── 전환 확인 대기 중: Analysis 가 아니라 Confirmation 으로 보낸다 ──
+  if (s.awaiting_confirmation) {
+    const { decision } = await runConfirmation(
+      s.assessor_output, s.active_unit, latestTutorUtterance, learnerMessage, prompts, api,
+    );
 
-  // ── Resolution pending: student is responding to "다음 탭으로 넘어가볼까요?" ──
-  if (state.item_resolution_pending) {
-    const confirming = await runConfirmationClassifier(studentMessage, prompts, api);
-    if (confirming) {
-      // Student confirmed → complete the item
-      updatedState.item_resolution_pending = false;
-      updatedState.resolutions = { ...updatedState.resolutions, [currentItem]: true };
-      const allDone = updatedState.priority_queue.every((k) => updatedState.resolutions[k]);
-      updatedState.session_complete = allDone;
-      utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'closing');
+    if (decision === 'unclear') {
+      // 프롬프트가 "애매하면 추측하지 말라"고 하므로, 코드가 결정적으로 되묻고 대기를 유지한다.
       return {
-        utterance,
-        updated_state: updatedState,
-        resolution_achieved: true,
-        tab_unlocked: !allDone,
-        session_complete: allDone,
-        classification: 'on_track',
-      };
-    } else {
-      // Student has more to discuss → clear pending, continue normal flow
-      updatedState.item_resolution_pending = false;
-      utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'normal');
-      return { utterance, updated_state: updatedState, resolution_achieved: false, tab_unlocked: false, session_complete: false, classification: 'on_track' };
-    }
-  }
-
-  // [코드] Analysis 호출 (Classifier + Evaluator 병합)
-  const analysis = await runAnalysis(studentMessage, currentItem, state, prompts, api);
-  const classification = analysis.classification;
-
-  if (classification === 'on_track') {
-    const evalResult = {
-      identification_success: analysis.identification_success,
-      remedial_verbalization_success: analysis.remedial_verbalization_success,
-    };
-
-    // [코드] 누적 필드 갱신
-    if (evalResult.identification_success) updatedState.item_identification_cumulative = true;
-    if (evalResult.remedial_verbalization_success) updatedState.item_verbalization_cumulative = true;
-
-    const resolved = updatedState.item_identification_cumulative && updatedState.item_verbalization_cumulative;
-
-    if (!resolved) updatedState.current_step += 1;
-
-    if (resolved) {
-      // Conditions met → ask student if they want to move on (do NOT complete yet)
-      updatedState.item_resolution_pending = true;
-      utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'resolution', evalResult);
-      return {
-        utterance,
-        updated_state: updatedState,
-        resolution_achieved: false,
+        utterance: '지금 내용으로 넘어가도 괜찮을까요, 아니면 이 부분을 조금 더 살펴볼까요?',
+        updated_state: s,
+        classification: 'confirmation',
         tab_unlocked: false,
         session_complete: false,
-        classification,
       };
     }
 
-    // [코드] Mediator 호출 (normal)
-    utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'normal', evalResult);
+    if (decision === 'continue_help') {
+      // 직접 설명 1회 → 그 뒤 유닛을 닫고 통상 라우팅. Confirmation 을 반복하지 않는다.
+      const help = await mediate(s, 'post_confirmation_help', history, learnerMessage, turnCtx, prompts, api);
+      const adv = await closeAndAdvance(s, 'completed_by_learner', help, turnCtx, prompts, api);
+      return toResult(adv, help, 'confirmation');
+    }
 
-  } else if (classification === 'confusion') {
-    // [코드] Reexplainer 호출
-    const guidance = await runReexplainer(studentMessage, currentItem, updatedState, prompts, api);
-    updatedState.current_step += 1;
-    utterance = await runMediator(studentMessage, currentItem, updatedState, prompts, api, 'reexplain', undefined, guidance);
-
-  } else {
-    // off_topic → Deflector
-    utterance = await runDeflector(studentMessage, currentItem, updatedState, prompts, api);
+    // move_on
+    const adv = await closeAndAdvance(s, 'completed_by_learner', '', turnCtx, prompts, api);
+    return toResult(adv, '', 'confirmation');
   }
 
-  return { utterance, updated_state: updatedState, resolution_achieved: false, tab_unlocked: false, session_complete: false, classification };
+  // ── 통상 턴: Analysis → 상태 전이 → Mediator ──
+  const verdict = await runAnalysis(
+    s.assessor_output, s.active_unit, latestTutorUtterance, learnerMessage, history, prompts, api,
+  );
+  const { unit, route } = applyAnalysis(s.active_unit, verdict);
+  s = { ...s, active_unit: unit };
+
+  if (route.kind === 'confirmation') {
+    // 양쪽 충족 → Mediator 가 마무리하며 전환 질문을 던지고, 다음 응답을 Confirmation 이 판정한다.
+    const utterance = await mediate(s, 'on_track_continue', history, learnerMessage, turnCtx, prompts, api);
+    return {
+      utterance,
+      updated_state: { ...s, awaiting_confirmation: true },
+      classification: 'on_track',
+      tab_unlocked: false,
+      session_complete: false,
+    };
+  }
+
+  const utterance = await mediate(s, route.context, history, learnerMessage, turnCtx, prompts, api);
+
+  // Step 5 는 terminal — 응답을 기다리지 않고 유닛을 닫는다. 보조 유닛도 열지 않는다.
+  if (route.context === 'on_track_continue' && isTerminalStep(s.active_unit)) {
+    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', utterance, turnCtx, prompts, api);
+    return toResult(adv, utterance, verdict.classification);
+  }
+
+  return {
+    utterance,
+    updated_state: s,
+    classification: verdict.classification,
+    tab_unlocked: false,
+    session_complete: false,
+  };
 }
 
-// ─── Opening message (called immediately after session init) ─────────────────
-
-export async function generateOpeningMessage(
-  state: DASessionState,
-  prompts: Record<string, string>,
-  api: APISettings,
-): Promise<string> {
-  const currentItem = state.priority_queue[state.current_item_idx];
-  if (!currentItem) return '평가 세션을 시작합니다.';
-  return runMediator('[SESSION_OPENED]', currentItem, state, prompts, api, 'opening');
-}
-
-// ─── Tab advance (called when student clicks next tab) ────────────────────────
-
-export function advanceToNextItem(state: DASessionState): DASessionState {
-  const next = state.current_item_idx + 1;
-  return resetItemState({ ...state, current_item_idx: next });
-}
+export { unitOf } from './da-state';

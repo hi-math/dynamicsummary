@@ -3,9 +3,11 @@
 import { revalidatePath } from 'next/cache';
 import { createServerClient } from '@/lib/supabase-server';
 import { callAI } from '@/lib/ai';
-import { nextPhase } from '@/lib/phases';
-import { initDASession, processTurn, advanceToNextItem, createInitialState, generateOpeningMessage } from '@/lib/da-pipeline';
-import type { APISettings, Prompts, SessionData, AIMessage, Phase, DASessionState, ComprehensionQuestion, TurnResult } from '@/types';
+import { nextPhase, cycleKeyFromPhase } from '@/lib/phases';
+import { initDASession, processTurn, createInitialState } from '@/lib/da-pipeline';
+import type { AssessorRefs, TurnResult } from '@/lib/da-pipeline';
+import type { UnitTurn } from '@/lib/da-nodes';
+import type { APISettings, Prompts, SessionData, AIMessage, Phase, DASessionState, ComprehensionQuestion } from '@/types';
 
 // ─── Session data ─────────────────────────────────────────────────────────────
 
@@ -122,32 +124,61 @@ export async function submitComprehensionAnswers(
 
 // ─── DA session state ─────────────────────────────────────────────────────────
 
-async function loadPromptAssets(supabase: ReturnType<typeof createServerClient>): Promise<Record<string, string>> {
+async function loadPromptAssets(
+  supabase: ReturnType<typeof createServerClient>,
+  phase: string,
+): Promise<Record<string, string>> {
   const { data } = await supabase.from('prompt_assets').select('key, content');
-  return Object.fromEntries((data ?? []).map((r: { key: string; content: string }) => [r.key, r.content]));
+  const map = Object.fromEntries((data ?? []).map((r: { key: string; content: string }) => [r.key, r.content]));
+  // 과제별(cycle) 지식자료를 현재 phase에 맞춰 knowledge_active 로 노출한다.
+  // 이 값은 과제평가(Assessor)에서만 쓰인다 — DA 채팅(Mediator)은 읽지 않는다.
+  map['knowledge_active'] = map[`knowledge_${cycleKeyFromPhase(phase)}`] ?? '';
+  return map;
 }
 
+// Assessor 참조자료 — 현재 phase의 과제(cycle)에 딸린 IU 표.
+// 진단 전용이며 학생에게는 노출하지 않는다. 컬럼이 아직 없으면 조용히 빈 값으로 둔다.
+async function loadAssessorRefs(
+  supabase: ReturnType<typeof createServerClient>,
+  phase: string,
+): Promise<AssessorRefs> {
+  const { data, error } = await supabase
+    .from('passages')
+    .select('idea_units')
+    .eq('cycle_key', cycleKeyFromPhase(phase))
+    .single();
+  if (error || !data) return {};
+  return { ideaUnits: (data.idea_units ?? []) as AssessorRefs['ideaUnits'] };
+}
+
+// 한 탭(항목) 안의 대화 기록. DA 파이프라인의 채팅 노드들이 현황 파악에 쓴다.
+async function loadTabHistory(
+  supabase: ReturnType<typeof createServerClient>,
+  studentId: string,
+  phase: string,
+  itemIdx: number,
+): Promise<{ role: string; content: string }[]> {
+  const { data } = await supabase
+    .from('ai_messages')
+    .select('role, content')
+    .eq('student_id', studentId)
+    .eq('phase', phase)
+    .eq('item_idx', itemIdx)
+    .order('created_at', { ascending: true });
+  return (data ?? []) as { role: string; content: string }[];
+}
+
+// DA 상태는 구조가 커서 state JSONB 한 칸에 통째로 저장한다.
+// assessor_output 은 관리자 조회·CSV 용으로 별도 컬럼에도 함께 둔다.
 export async function getDASessionState(studentId: string, phase: string): Promise<DASessionState | null> {
   const supabase = createServerClient();
   const { data } = await supabase
     .from('da_session_state')
-    .select('*')
+    .select('state')
     .eq('student_id', studentId)
     .eq('phase', phase)
     .single();
-  if (!data) return null;
-  return {
-    priority_queue: data.priority_queue,
-    current_item_idx: data.current_item_idx,
-    current_step: data.current_step,
-    item_identification_cumulative: data.item_identification_cumulative,
-    item_verbalization_cumulative: data.item_verbalization_cumulative,
-    item_resolution_pending: data.item_resolution_pending ?? false,
-    resolutions: data.resolutions,
-    session_complete: data.session_complete,
-    diagnosis_confidence: data.diagnosis_confidence,
-    assessor_output: data.assessor_output,
-  } as DASessionState;
+  return (data?.state as DASessionState | undefined) ?? null;
 }
 
 async function saveDASessionState(
@@ -155,28 +186,20 @@ async function saveDASessionState(
   studentId: string,
   phase: string,
   state: DASessionState,
-  extra?: { assessorOutputsAll?: unknown; verifierNotesAll?: unknown },
 ) {
   await supabase.from('da_session_state').upsert({
     student_id: studentId,
     phase,
+    state,
     priority_queue: state.priority_queue,
     current_item_idx: state.current_item_idx,
-    current_step: state.current_step,
-    item_identification_cumulative: state.item_identification_cumulative,
-    item_verbalization_cumulative: state.item_verbalization_cumulative,
-    item_resolution_pending: state.item_resolution_pending ?? false,
-    resolutions: state.resolutions,
     session_complete: state.session_complete,
-    diagnosis_confidence: state.diagnosis_confidence,
     assessor_output: state.assessor_output,
-    ...(extra?.assessorOutputsAll ? { assessor_outputs_all: extra.assessorOutputsAll } : {}),
-    ...(extra?.verifierNotesAll ? { verifier_notes_all: extra.verifierNotesAll } : {}),
     updated_at: new Date().toISOString(),
   }, { onConflict: 'student_id,phase' });
 }
 
-// Starts the DA session: runs Assessor → Verifier → Priority selection → Opening message
+// Starts the DA session: runs Assessor → Priority selection → Opening message
 export async function startDASession(
   studentId: string,
   phase: string,
@@ -192,19 +215,20 @@ export async function startDASession(
   const existing = await getDASessionState(studentId, phase);
   if (existing) return { state: existing };
 
-  const [apiRes, prompts] = await Promise.all([
+  const [apiRes, prompts, refs] = await Promise.all([
     supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
-    loadPromptAssets(supabase),
+    loadPromptAssets(supabase, phase),
+    loadAssessorRefs(supabase, phase),
   ]);
   if (!apiRes.data) return { state: createInitialState(), error: 'API 설정이 없습니다.' };
 
   try {
-    // initDASession now also returns the opening utterance (generated in parallel with
-    // the verifier), so we no longer make a separate generateOpeningMessage call here.
-    const { state, assessorOutputsAll, verifierNotesAll, openingUtterance } = await initDASession(
-      summary, passageContent, prompts, apiRes.data
+    // initDASession returns the opening utterance too, so no separate
+    // generateOpeningMessage call is needed here.
+    const { state, openingUtterance } = await initDASession(
+      summary, passageContent, prompts, apiRes.data, refs
     );
-    await saveDASessionState(supabase, studentId, phase, state, { assessorOutputsAll, verifierNotesAll });
+    await saveDASessionState(supabase, studentId, phase, state);
 
     await supabase.from('ai_messages').insert([
       { student_id: studentId, phase, role: 'assistant', content: openingUtterance, item_idx: state.current_item_idx },
@@ -240,127 +264,61 @@ export async function preGenerateDASession(
 // Processes one student turn through Classifier → route → Mediator
 // itemIdx: which tab the student is currently on (overrides DB current_item_idx for free navigation)
 // itemState: per-item cumulative state managed client-side
+// 학생 메시지 1턴 처리. 활성 유닛·단계·목표는 서버 상태가 권위를 가지므로
+// 클라이언트가 탭/누적 상태를 덮어쓰지 않는다 (0719 설계: 코드가 라우팅을 소유).
 export async function sendDAMessage(
   studentId: string,
   phase: string,
   studentMessage: string,
-  summary: string,
   passageContent: string,
-  itemIdx?: number,
-  itemState?: { identification: boolean; verbalization: boolean; step: number },
 ): Promise<TurnResult & { error?: string }> {
   const supabase = createServerClient();
 
   const [apiRes, prompts, currentState] = await Promise.all([
     supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
-    loadPromptAssets(supabase),
+    loadPromptAssets(supabase, phase),
     getDASessionState(studentId, phase),
   ]);
 
-  if (!apiRes.data) return { utterance: '', updated_state: createInitialState(), resolution_achieved: false, tab_unlocked: false, session_complete: false, classification: 'on_track', error: 'API 설정이 없습니다.' };
-  if (!currentState) return { utterance: '', updated_state: createInitialState(), resolution_achieved: false, tab_unlocked: false, session_complete: false, classification: 'on_track', error: 'DA 세션이 초기화되지 않았습니다.' };
+  const fail = (error: string, state?: DASessionState): TurnResult & { error: string } => ({
+    utterance: '', updated_state: state ?? createInitialState(), classification: 'on_track',
+    tab_unlocked: false, session_complete: false, error,
+  });
+  if (!apiRes.data) return fail('API 설정이 없습니다.');
+  if (!currentState) return fail('DA 세션이 초기화되지 않았습니다.');
 
-  // Override with per-item state for free navigation
-  const effectiveState: DASessionState = {
-    ...currentState,
-    ...(itemIdx != null ? { current_item_idx: itemIdx } : {}),
-    ...(itemState != null ? {
-      current_step: itemState.step,
-      item_identification_cumulative: itemState.identification,
-      item_verbalization_cumulative: itemState.verbalization,
-    } : {}),
-  };
+  // 현재 활성 유닛이 속한 탭의 대화만 넘긴다 (다른 탭의 대화는 섞이지 않는다).
+  const itemIdx = currentState.current_item_idx;
+  const rows = await loadTabHistory(supabase, studentId, phase, itemIdx);
+  // prompt_mediator_common 의 History input contract 형식으로 변환.
+  const history: UnitTurn[] = rows.map((m) => ({
+    speaker: m.role === 'user' ? 'learner' : 'mediator',
+    text: m.content,
+  }));
+  const latestTutorUtterance = [...history].reverse().find((t) => t.speaker === 'mediator')?.text ?? '';
 
   try {
-    const result = await processTurn(effectiveState, studentMessage, summary, passageContent, prompts, apiRes.data);
+    const result = await processTurn(
+      currentState,
+      studentMessage,
+      latestTutorUtterance,
+      history,
+      { sourceText: passageContent, cycleKnowledge: prompts['knowledge_active'] ?? '' },
+      prompts,
+      apiRes.data,
+    );
 
-    const msgItemIdx = itemIdx ?? currentState.current_item_idx;
     await saveDASessionState(supabase, studentId, phase, result.updated_state);
+    // 발화는 "그 발화가 속한 탭"에 기록한다 — 탭이 넘어갔으면 새 탭에 붙는다.
+    const outIdx = result.updated_state.current_item_idx;
     await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'user', content: studentMessage, item_idx: msgItemIdx },
-      { student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: msgItemIdx },
+      { student_id: studentId, phase, role: 'user', content: studentMessage, item_idx: itemIdx },
+      { student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: outIdx },
     ]);
 
     return result;
   } catch (e) {
-    return { utterance: '', updated_state: effectiveState, resolution_achieved: false, tab_unlocked: false, session_complete: false, classification: 'on_track', error: e instanceof Error ? e.message : '처리 실패' };
-  }
-}
-
-// Force-resolve an item (used when 10-turn limit is reached)
-export async function forceResolveDAItem(
-  studentId: string,
-  phase: string,
-  itemKey: string,
-): Promise<{ state?: DASessionState; error?: string }> {
-  const supabase = createServerClient();
-  const state = await getDASessionState(studentId, phase);
-  if (!state) return { error: '세션을 찾을 수 없습니다.' };
-
-  const newResolutions = { ...state.resolutions, [itemKey]: true };
-  const allDone = state.priority_queue.every((k) => newResolutions[k]);
-  const updated: DASessionState = { ...state, resolutions: newResolutions, session_complete: allDone };
-
-  await saveDASessionState(supabase, studentId, phase, updated);
-  return { state: updated };
-}
-
-// Generate opening message for a specific tab (for free navigation — user jumps to a new tab)
-export async function generateItemOpening(
-  studentId: string,
-  phase: string,
-  itemIdx: number,
-): Promise<{ utterance?: string; error?: string }> {
-  const supabase = createServerClient();
-
-  const [state, apiRes, prompts] = await Promise.all([
-    getDASessionState(studentId, phase),
-    supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
-    loadPromptAssets(supabase),
-  ]);
-
-  if (!state) return { error: '세션을 찾을 수 없습니다.' };
-  if (!apiRes.data) return { error: 'API 설정이 없습니다.' };
-
-  const effectiveState: DASessionState = { ...state, current_item_idx: itemIdx };
-  try {
-    const utterance = await generateOpeningMessage(effectiveState, prompts, apiRes.data);
-    await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'assistant', content: utterance, item_idx: itemIdx },
-    ]);
-    return { utterance };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : '오프닝 생성 실패' };
-  }
-}
-
-// Called when an item tab resolves — advances to next item and generates its opening message
-export async function advanceDATab(
-  studentId: string,
-  phase: string,
-): Promise<{ state?: DASessionState; openingUtterance?: string; error?: string }> {
-  const supabase = createServerClient();
-
-  const [state, apiRes, prompts] = await Promise.all([
-    getDASessionState(studentId, phase),
-    supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
-    loadPromptAssets(supabase),
-  ]);
-
-  if (!state) return { error: '세션을 찾을 수 없습니다.' };
-  if (!apiRes.data) return { error: 'API 설정이 없습니다.' };
-
-  const nextState = advanceToNextItem(state);
-  await saveDASessionState(supabase, studentId, phase, nextState);
-
-  try {
-    const openingUtterance = await generateOpeningMessage(nextState, prompts, apiRes.data);
-    await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'assistant', content: openingUtterance, item_idx: nextState.current_item_idx },
-    ]);
-    return { state: nextState, openingUtterance };
-  } catch (e) {
-    return { state: nextState, error: e instanceof Error ? e.message : '오프닝 생성 실패' };
+    return fail(e instanceof Error ? e.message : '처리 실패', currentState);
   }
 }
 

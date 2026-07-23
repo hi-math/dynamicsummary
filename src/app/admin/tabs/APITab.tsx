@@ -5,9 +5,32 @@ import { useToast } from '@/components/ui/Toast';
 import { saveAPISettings } from '@/actions/admin';
 import type { APISettings } from '@/types';
 
-const OPENAI_MODELS = ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.4-nano', 'o3', 'o4-mini', 'gpt-4o', 'gpt-4o-mini'];
-const ANTHROPIC_MODELS = ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
-const GEMINI_MODELS = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+// OpenAI: 2026-07-09 GPT-5.6 세대(Sol/Terra/Luna)로 전환. 별칭 gpt-5.6 → Sol.
+const OPENAI_MODELS = [
+  'gpt-5.6-sol',    // 프론티어 티어
+  'gpt-5.6-terra',  // 지능/비용 균형 (구 mini 티어)
+  'gpt-5.6-luna',   // 최저가·고volume (구 nano 티어)
+  'gpt-5.5',
+  'gpt-5.4-mini',
+  'gpt-4o',
+];
+// Anthropic: 별칭(alias) 문자열만 사용한다. 날짜 접미사를 붙이면 404가 난다.
+// 권장 기본값은 claude-opus-4-8.
+const ANTHROPIC_MODELS = [
+  'claude-opus-4-8',   // 최신 Opus — 기본값 권장
+  'claude-sonnet-5',   // Opus급 품질 / Sonnet 가격
+  'claude-opus-4-7',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',  // 가장 저렴·빠름
+];
+// Gemini: 3.5 Flash가 GA(=gemini-flash-latest). 2.0 계열은 2026-06-01 종료됨.
+const GEMINI_MODELS = [
+  'gemini-3.5-flash',       // GA — 현행 Flash
+  'gemini-3.1-pro-preview', // gemini-3-pro-preview 가 여기로 연결됨
+  'gemini-3.1-flash-lite',  // 최저가
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+];
 
 const PROVIDER_LABEL: Record<string, string> = {
   openai: 'OpenAI',
@@ -20,7 +43,7 @@ export default function APITab({ initialAPI }: { initialAPI: APISettings | null 
   const [saving, setSaving] = useState(false);
   const [provider, setProvider] = useState(initialAPI?.provider ?? 'openai');
   const [openaiModel, setOpenaiModel] = useState(initialAPI?.openai_model ?? 'gpt-5.5');
-  const [anthropicModel, setAnthropicModel] = useState(initialAPI?.anthropic_model ?? 'claude-opus-4-7');
+  const [anthropicModel, setAnthropicModel] = useState(initialAPI?.anthropic_model ?? 'claude-opus-4-8');
   const [geminiModel, setGeminiModel] = useState(initialAPI?.gemini_model ?? 'gemini-2.5-flash');
 
   const activeModel =
