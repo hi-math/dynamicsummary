@@ -249,18 +249,22 @@ export async function getComprehensionQuestionsAdmin() {
 
 export async function getStudentData(studentId: string) {
   const supabase = createServerClient();
-  const [sessionsRes, aiMsgsRes, humanMsgsRes, daStatesRes] = await Promise.all([
+  const [sessionsRes, aiMsgsRes, humanMsgsRes, daStatesRes, turnLogsRes] = await Promise.all([
     supabase.from('session_data').select('*').eq('student_id', studentId),
     supabase.from('ai_messages').select('*').eq('student_id', studentId).order('created_at'),
     supabase.from('human_messages').select('*').eq('student_id', studentId).order('created_at'),
     // Assessor 진단·지도 계획 (CSV 내보내기의 [진단 및 지도 계획] 섹션에 쓰인다)
     supabase.from('da_session_state').select('phase, assessor_output').eq('student_id', studentId),
+    // 턴 로그 ([턴 로그] 섹션). 테이블이 아직 없으면 조용히 빈 배열이 된다.
+    supabase.from('da_turn_logs').select('*').eq('student_id', studentId)
+      .order('phase').order('turn_index'),
   ]);
   return {
     sessions: sessionsRes.data ?? [],
     aiMessages: aiMsgsRes.data ?? [],
     humanMessages: humanMsgsRes.data ?? [],
     daStates: daStatesRes.data ?? [],
+    turnLogs: turnLogsRes.data ?? [],
   };
 }
 

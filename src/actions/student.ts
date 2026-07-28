@@ -269,6 +269,18 @@ export async function sendDAMessage(
   const fail = (error: string, state?: DASessionState): TurnResult & { error: string } => ({
     utterance: '', updated_state: state ?? createInitialState(), classification: 'on_track',
     tab_unlocked: false, session_complete: false, error,
+    log: {
+      tab: 0, item: '', item_idx: 0,
+      learner_message: studentMessage, previous_tutor_utterance: '',
+      classification: null, turn_pi: null, turn_psv: null, analysis_rationale: null,
+      target_before: 'problem_identification', step_before: 0, pi_before: 'absent', psv_before: 'absent',
+      target_after: 'problem_identification', step_after: 0, pi_after: 'absent', psv_after: 'absent',
+      off_track_streak: 0, node: 'mediation', utterance: '',
+      used_target: null, used_step: null, reconcile_mismatch: error,
+      confirm_decision: null, confirm_rationale: null,
+      unit_closed: false, next_item: null, session_complete: false,
+      llm_calls: 0, latency_ms: 0,
+    },
   });
   if (!apiRes.data) return fail('API 설정이 없습니다.');
   if (!currentState) return fail('DA 세션이 초기화되지 않았습니다.');
@@ -305,6 +317,17 @@ export async function sendDAMessage(
       { student_id: studentId, phase, role: 'user', content: studentMessage, item_idx: itemIdx },
       { student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: outIdx },
     ]);
+
+    // 턴 로그 — 연구 데이터의 원장. 채팅 저장을 막지 않도록 실패해도 넘어간다.
+    const { count } = await supabase
+      .from('da_turn_logs')
+      .select('turn_index', { count: 'exact', head: true })
+      .eq('student_id', studentId)
+      .eq('phase', phase);
+    const { error: logErr } = await supabase.from('da_turn_logs').insert({
+      student_id: studentId, phase, turn_index: (count ?? 0) + 1, ...result.log,
+    });
+    if (logErr) console.warn('[DA] 턴 로그 저장 실패:', logErr.message);
 
     return result;
   } catch (e) {

@@ -11,8 +11,11 @@ import type {
   APISettings,
   AssessmentItem,
   AssessorOutput,
+  Classification,
   DASessionState,
   ResponseContext,
+  TurnLog,
+  TurnNode,
   UnitOutcome,
 } from '@/types';
 import { descriptorBlockAll, itemsFrom } from './descriptors';
@@ -287,7 +290,84 @@ export type TurnResult = {
   classification: 'on_track' | 'confusion' | 'off_topic' | 'confirmation' | 'closing';
   tab_unlocked: boolean;
   session_complete: boolean;
+  /** 이 턴에 일어난 모든 것. 호출 측(server action)이 da_turn_logs 에 그대로 넣는다. */
+  log: Omit<TurnLog, 'student_id' | 'phase' | 'turn_index'>;
 };
+
+/** 턴 로그 누산기 — processTurn 이 진행하면서 채운다. */
+type LogDraft = {
+  startedAt: number;
+  llmCalls: number;
+  classification: Classification | null;
+  turn_pi: TurnLog['turn_pi'];
+  turn_psv: TurnLog['turn_psv'];
+  analysis_rationale: string | null;
+  used_target: TurnLog['used_target'];
+  used_step: number | null;
+  reconcile_mismatch: string | null;
+  confirm_decision: string | null;
+  confirm_rationale: string | null;
+};
+
+function newDraft(): LogDraft {
+  return {
+    startedAt: Date.now(), llmCalls: 0,
+    classification: null, turn_pi: null, turn_psv: null, analysis_rationale: null,
+    used_target: null, used_step: null, reconcile_mismatch: null,
+    confirm_decision: null, confirm_rationale: null,
+  };
+}
+
+/** 턴이 끝날 때 로그 한 행을 만든다. */
+function buildLog(
+  before: DASessionState,
+  after: DASessionState,
+  d: LogDraft,
+  args: {
+    learnerMessage: string;
+    previousTutorUtterance: string;
+    node: TurnNode;
+    utterance: string;
+    unitClosed: boolean;
+    nextItem: string | null;
+    sessionComplete?: boolean;
+  },
+): TurnResult['log'] {
+  const b = before.active_unit;
+  const a = after.active_unit;
+  return {
+    tab: b.tab,
+    item: b.item,
+    item_idx: before.current_item_idx,
+    learner_message: args.learnerMessage,
+    previous_tutor_utterance: args.previousTutorUtterance,
+    classification: d.classification,
+    turn_pi: d.turn_pi,
+    turn_psv: d.turn_psv,
+    analysis_rationale: d.analysis_rationale,
+    target_before: b.current_target,
+    step_before: b.current_step,
+    pi_before: b.cumulative_pi,
+    psv_before: b.cumulative_psv,
+    target_after: a.current_target,
+    step_after: a.current_step,
+    pi_after: a.cumulative_pi,
+    psv_after: a.cumulative_psv,
+    off_track_streak: a.consecutive_off_track ?? 0,
+    node: args.node,
+    utterance: args.utterance,
+    used_target: d.used_target,
+    used_step: d.used_step,
+    reconcile_mismatch: d.reconcile_mismatch,
+    confirm_decision: d.confirm_decision,
+    confirm_rationale: d.confirm_rationale,
+    unit_closed: args.unitClosed,
+    next_item: args.nextItem,
+    session_complete: args.sessionComplete ?? after.closing_phase,
+    llm_calls: d.llmCalls,
+    latency_ms: Date.now() - d.startedAt,
+  };
+}
 
 /**
  * 유닛을 닫고 다음 행선지로 이동시킨 뒤 그곳의 첫 발화를 만든다.
@@ -301,6 +381,7 @@ async function closeAndAdvance(
   turnCtx: TurnContext,
   prompts: Record<string, string>,
   api: APISettings,
+  d: LogDraft,
 ): Promise<{ state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean }> {
   const closed = state.active_unit;
   let next = closeUnit(state, outcome, principle);
@@ -308,9 +389,11 @@ async function closeAndAdvance(
   next = advanceTo(next, dest);
 
   if (dest.kind === 'closing') {
+    d.llmCalls++;
     const utterance = await mediate(next, 'session_closing', [], undefined, turnCtx, prompts, api);
     return { state: next, sameTabText: utterance, tabUnlocked: false };
   }
+  d.llmCalls++;
   const utterance = await mediate(next, 'opening', [], undefined, turnCtx, prompts, api);
   if (dest.kind === 'next_tab') {
     return { state: next, sameTabText: '', nextOpening: utterance, tabUnlocked: true };
@@ -324,15 +407,35 @@ function toResult(
   adv: { state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean },
   leadingText: string,
   classification: TurnResult['classification'],
+  before: DASessionState,
+  // 유닛이 닫히기 직전의 상태. '전이 후' 열은 다음 유닛이 아니라
+  // **방금 닫힌 유닛의 최종 상태**를 기록해야 연구 데이터로 읽힌다.
+  atClose: DASessionState,
+  d: LogDraft,
+  logArgs: {
+    learnerMessage: string;
+    previousTutorUtterance: string;
+    node: TurnNode;
+  },
 ): TurnResult {
   const parts = [leadingText, adv.sameTabText].filter(Boolean);
+  const utterance = parts.join('\n\n');
+  const nextItem = adv.state.active_unit.item;
   return {
-    utterance: parts.join('\n\n'),
+    utterance,
     next_opening: adv.nextOpening,
     updated_state: adv.state,
     classification,
     tab_unlocked: adv.tabUnlocked,
     session_complete: adv.state.closing_phase,
+    log: buildLog(before, atClose, d, {
+      ...logArgs,
+      // 발화 전문은 다음 탭 오프닝까지 포함해 남긴다 (학생이 이 턴에 본 전부).
+      utterance: [utterance, adv.nextOpening].filter(Boolean).join('\n\n'),
+      unitClosed: true,
+      nextItem: nextItem && nextItem !== before.active_unit.item ? nextItem : null,
+      sessionComplete: adv.state.closing_phase,
+    }),
   };
 }
 
@@ -346,51 +449,65 @@ export async function processTurn(
   api: APISettings,
 ): Promise<TurnResult> {
   let s: DASessionState = { ...state };
+  const d = newDraft();
+  const logBase = { learnerMessage, previousTutorUtterance: latestTutorUtterance };
+  const log = (node: TurnNode, utterance: string, after: DASessionState = s) =>
+    buildLog(state, after, d, { ...logBase, node, utterance, unitClosed: false, nextItem: null });
 
   // ── 종료 단계: 세션은 이미 끝났다. LLM 을 부르지 않는다.
   //    (UI 도 해결된 탭에서는 입력창을 숨기므로 보통 여기까지 오지 않는다.) ──
   if (s.closing_phase) {
+    const utterance = '이번 세션은 여기서 마무리되었어요. 수고 많으셨습니다.';
     return {
-      utterance: '이번 세션은 여기서 마무리되었어요. 수고 많으셨습니다.',
+      utterance,
       updated_state: s,
       classification: 'closing',
       tab_unlocked: false,
       session_complete: true,
+      log: log('session_closed_notice', utterance),
     };
   }
 
   // ── 전환 확인 대기 중: Analysis 가 아니라 Confirmation 으로 보낸다 ──
   if (s.awaiting_confirmation) {
-    const { decision } = await runConfirmation(
+    d.llmCalls++;
+    const confirm = await runConfirmation(
       s.assessor_output, s.active_unit, latestTutorUtterance, learnerMessage, prompts, api,
     );
+    const decision = confirm.decision;
+    d.confirm_decision = decision ?? null;
+    d.confirm_rationale = confirm.rationale ?? null;
 
     if (decision === 'unclear') {
       // 프롬프트가 "애매하면 추측하지 말라"고 하므로, 코드가 결정적으로 되묻고 대기를 유지한다.
+      const utterance = '지금 내용으로 넘어가도 괜찮을까요, 아니면 이 부분을 조금 더 살펴볼까요?';
       return {
-        utterance: '지금 내용으로 넘어가도 괜찮을까요, 아니면 이 부분을 조금 더 살펴볼까요?',
+        utterance,
         updated_state: s,
         classification: 'confirmation',
         tab_unlocked: false,
         session_complete: false,
+        log: log('confirmation_reask', utterance),
       };
     }
 
     if (decision === 'continue_help') {
       // 직접 설명 1회 → 그 뒤 유닛을 닫고 통상 라우팅. Confirmation 을 반복하지 않는다.
+      d.llmCalls++;
       const help = await mediate(s, 'post_confirmation_help', history, learnerMessage, turnCtx, prompts, api);
-      const adv = await closeAndAdvance(s, 'completed_by_learner', help, turnCtx, prompts, api);
-      return toResult(adv, help, 'confirmation');
+      const adv = await closeAndAdvance(s, 'completed_by_learner', help, turnCtx, prompts, api, d);
+      return toResult(adv, help, 'confirmation', state, s, d, { ...logBase, node: 'post_confirm' });
     }
 
     // move_on
-    const adv = await closeAndAdvance(s, 'completed_by_learner', '', turnCtx, prompts, api);
-    return toResult(adv, '', 'confirmation');
+    const adv = await closeAndAdvance(s, 'completed_by_learner', '', turnCtx, prompts, api, d);
+    return toResult(adv, '', 'confirmation', state, s, d, { ...logBase, node: 'unit_closed' });
   }
 
   // ── 통상 턴 ──
   //   ③ Analysis 가 분류와 목표 판정을 함께 낸다.
   //   코드가 목표·단계를 확정한 뒤, ⑤ Mediation 이 그 자리에서 발화만 만든다.
+  d.llmCalls++;
   const analysis = await runAnalysis(
     s.assessor_output, s.active_unit, latestTutorUtterance, learnerMessage, history,
     {
@@ -400,11 +517,17 @@ export async function processTurn(
     },
     prompts, api,
   );
+  d.classification = analysis.classification;
+  d.turn_pi = analysis.verdict.turn_pi ?? null;
+  d.turn_psv = analysis.verdict.turn_psv ?? null;
+  d.analysis_rationale = analysis.rationale ?? null;
+
   const { unit, context } = applyClassification(s.active_unit, analysis.classification);
   s = { ...s, active_unit: unit };
 
   // 복구 발화 (confusion / off_topic) — 판정 없이 되돌리기만 한다.
   if (context !== 'on_track_continue') {
+    d.llmCalls++;
     const utterance = await mediate(
       s, context, history, learnerMessage, turnCtx, prompts, api, latestTutorUtterance,
     );
@@ -414,6 +537,10 @@ export async function processTurn(
       classification: analysis.classification,
       tab_unlocked: false,
       session_complete: false,
+      log: log(
+        context === 'confusion_rephrase' ? 'recovery_confusion' : 'recovery_off_topic',
+        utterance,
+      ),
     };
   }
 
@@ -423,26 +550,31 @@ export async function processTurn(
 
   if (applied.bothSufficient) {
     // 양쪽 충족 → 유닛을 마무리하며 전환 질문을 던지고, 다음 응답을 Confirmation 이 판정한다.
+    d.llmCalls++;
     const utterance = await mediate(s, 'confirmation_invite', history, learnerMessage, turnCtx, prompts, api);
+    const after = { ...s, awaiting_confirmation: true };
     return {
       utterance,
-      updated_state: { ...s, awaiting_confirmation: true },
+      updated_state: after,
       classification: analysis.classification,
       tab_unlocked: false,
       session_complete: false,
+      log: log('confirm_invite', utterance, after),
     };
   }
 
   // 5단계는 terminal — 답을 직접 제공한 뒤 유닛을 닫는다.
   if (isTerminalStep(s.active_unit)) {
+    d.llmCalls++;
     const utterance = await mediate(
       s, 'on_track_continue', history, learnerMessage, turnCtx, prompts, api,
     );
-    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', utterance, turnCtx, prompts, api);
-    return toResult(adv, utterance, analysis.classification);
+    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', utterance, turnCtx, prompts, api, d);
+    return toResult(adv, utterance, analysis.classification, state, s, d, { ...logBase, node: 'provision' });
   }
 
   // ⑤ 확정된 목표·단계에서 발화를 만든다.
+  d.llmCalls++;
   const mediation = await runMediation(
     s.assessor_output, s.active_unit,
     {
@@ -464,13 +596,18 @@ export async function processTurn(
     console.warn(`[DA] 탭 ${s.active_unit.tab} ${s.active_unit.item}: ${reconciled.mismatch}`);
   }
   s = { ...s, active_unit: reconciled.unit };
+  d.used_target = mediation.used?.target ?? null;
+  d.used_step = mediation.used?.step ?? null;
+  d.reconcile_mismatch = reconciled.mismatch ?? null;
 
+  const utterance = mediation.utterance ?? '';
   return {
-    utterance: mediation.utterance ?? '',
+    utterance,
     updated_state: s,
     classification: analysis.classification,
     tab_unlocked: false,
     session_complete: false,
+    log: log('mediation', utterance),
   };
 }
 

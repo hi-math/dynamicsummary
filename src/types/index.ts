@@ -217,6 +217,72 @@ export type ActiveUnit = {
   consecutive_off_track?: number;
 };
 
+// ─── 턴 로그 ──────────────────────────────────────────────────────────────────
+// 학생 발화 한 번마다 한 행. 세션 상태(da_session_state)는 최신 스냅샷만 남기므로,
+// 판정·전이·발화의 이력은 여기에만 남는다. 연구 데이터의 원장이다.
+export type TurnLog = {
+  student_id: string;
+  phase: string;
+  turn_index: number;            // 이 phase 안에서 몇 번째 학생 발화인지 (1부터)
+
+  // 어느 탭/유닛에서 일어났는가
+  tab: number;
+  item: string;
+  item_idx: number;              // priority_queue 인덱스
+
+  // 입력
+  learner_message: string;
+  previous_tutor_utterance: string;
+
+  // ③ Analysis 판정
+  classification: Classification | null;
+  turn_pi: GoalStatus | null;
+  turn_psv: GoalStatus | null;
+  analysis_rationale: string | null;
+
+  // 상태 전이 (턴 시작 → 턴 끝)
+  target_before: GoalTarget;
+  step_before: number;
+  pi_before: GoalStatus;
+  psv_before: GoalStatus;
+  target_after: GoalTarget;
+  step_after: number;
+  pi_after: GoalStatus;
+  psv_after: GoalStatus;
+  off_track_streak: number;
+
+  // 이 턴에 발화를 만든 노드와 결과
+  node: TurnNode;
+  utterance: string;
+  used_target: GoalTarget | null;   // ⑤ 가 신고한 값
+  used_step: number | null;
+  reconcile_mismatch: string | null;
+
+  // ⑧ Confirmation
+  confirm_decision: string | null;
+  confirm_rationale: string | null;
+
+  // 흐름
+  unit_closed: boolean;
+  next_item: string | null;      // 탭이 넘어갔으면 다음 항목
+  session_complete: boolean;
+
+  // 계측
+  llm_calls: number;
+  latency_ms: number;
+};
+
+export type TurnNode =
+  | 'recovery_confusion'
+  | 'recovery_off_topic'
+  | 'mediation'
+  | 'provision'
+  | 'confirm_invite'
+  | 'confirmation_reask'     // unclear — 코드 고정 문구
+  | 'post_confirm'
+  | 'unit_closed'            // move_on — 발화 없이 유닛만 닫힘
+  | 'session_closed_notice'; // 종료 뒤 들어온 메시지
+
 export type DASessionState = {
   // Assessor 가 정한 탭 순서 (item key 배열). UI 탭과 1:1.
   priority_queue: string[];

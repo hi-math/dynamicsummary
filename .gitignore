@@ -42,3 +42,7 @@ next-env.d.ts
 
 # claude code worktrees / local agent state
 .claude/worktrees/
+
+# 로컬 검증 하네스 (TS→CJS 컴파일 결과)
+.probe/
+.probe.tsconfig.json

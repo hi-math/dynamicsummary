@@ -2,7 +2,7 @@
 
 import { PHASE_LABEL } from '@/lib/phases';
 import { orderedAssessment } from '@/lib/da-state';
-import type { User, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
+import type { User, SessionData, AIMessage, HumanMessage, DASessionState, TurnLog } from '@/types';
 
 export type StudentRecord = {
   student: User;
@@ -10,14 +10,51 @@ export type StudentRecord = {
   aiMessages: AIMessage[];
   humanMessages: HumanMessage[];
   daStates?: (DASessionState & { phase: string })[];
+  turnLogs?: (TurnLog & { created_at?: string })[];
 };
+
+// [턴 로그] 열 정의 — 헤더(한국어)와 값 추출을 한 곳에 둔다.
+const TURN_LOG_COLUMNS: [string, (t: TurnLog & { created_at?: string }) => unknown][] = [
+  ['단계',            (t) => PHASE_LABEL[t.phase as keyof typeof PHASE_LABEL] ?? t.phase],
+  ['턴',              (t) => t.turn_index],
+  ['시간',            (t) => (t.created_at ? new Date(t.created_at).toLocaleString('ko-KR') : '')],
+  ['탭',              (t) => t.tab],
+  ['항목',            (t) => t.item],
+  ['학생 발화',       (t) => t.learner_message],
+  ['직전 튜터 발화',  (t) => t.previous_tutor_utterance],
+  ['분류',            (t) => t.classification],
+  ['턴 PI 판정',      (t) => t.turn_pi],
+  ['턴 PSV 판정',     (t) => t.turn_psv],
+  ['판정 근거',       (t) => t.analysis_rationale],
+  ['목표(전)',        (t) => t.target_before],
+  ['단계(전)',        (t) => t.step_before],
+  ['PI 누적(전)',     (t) => t.pi_before],
+  ['PSV 누적(전)',    (t) => t.psv_before],
+  ['목표(후)',        (t) => t.target_after],
+  ['단계(후)',        (t) => t.step_after],
+  ['PI 누적(후)',     (t) => t.pi_after],
+  ['PSV 누적(후)',    (t) => t.psv_after],
+  ['연속 이탈',       (t) => t.off_track_streak],
+  ['발화 노드',       (t) => t.node],
+  ['튜터 발화',       (t) => t.utterance],
+  ['신고 목표',       (t) => t.used_target],
+  ['신고 단계',       (t) => t.used_step],
+  ['불일치',          (t) => t.reconcile_mismatch],
+  ['전환 판정',       (t) => t.confirm_decision],
+  ['전환 판정 근거',  (t) => t.confirm_rationale],
+  ['유닛 종료',       (t) => (t.unit_closed ? 'Y' : '')],
+  ['다음 항목',       (t) => t.next_item],
+  ['세션 종료',       (t) => (t.session_complete ? 'Y' : '')],
+  ['LLM 호출수',      (t) => t.llm_calls],
+  ['소요(ms)',        (t) => t.latency_ms],
+];
 
 function esc(v: string | null | undefined): string {
   return '"' + String(v ?? '').replace(/"/g, '""') + '"';
 }
 
 function exportCSV(record: StudentRecord) {
-  const { student, sessions, aiMessages, humanMessages, daStates = [] } = record;
+  const { student, sessions, aiMessages, humanMessages, daStates = [], turnLogs = [] } = record;
   const rows: string[][] = [];
 
   rows.push(['[학생 정보]']);
@@ -57,6 +94,19 @@ function exportCSV(record: StudentRecord) {
     rows.push([]);
   }
 
+  // 학생 발화 한 턴 = 한 행. 판정·전이·발화가 모두 들어 있다.
+  if (turnLogs.length > 0) {
+    rows.push(['[턴 로그]']);
+    rows.push(TURN_LOG_COLUMNS.map(([h]) => h));
+    for (const t of turnLogs) {
+      rows.push(TURN_LOG_COLUMNS.map(([, get]) => {
+        const v = get(t);
+        return v === null || v === undefined ? '' : String(v);
+      }));
+    }
+    rows.push([]);
+  }
+
   if (student.team === 'chatbot' && aiMessages.length > 0) {
     rows.push(['[AI 채팅 기록]']);
     rows.push(['단계', '역할', '내용', '시간']);
@@ -92,7 +142,7 @@ export default function StudentDataCard({
   busy?: boolean;
   onToggleTrash: (studentId: string, trashed: boolean) => void;
 }) {
-  const { student, sessions, aiMessages, humanMessages } = record;
+  const { student, sessions, aiMessages, humanMessages, turnLogs = [] } = record;
   const submittedSessions = sessions.filter((s) => s.submitted_at);
 
   return (
@@ -113,6 +163,7 @@ export default function StudentDataCard({
             {' · '}제출 {submittedSessions.length}건
             {student.team === 'chatbot' && ` · AI 메시지 ${aiMessages.length}개`}
             {student.team === 'human' && ` · 채팅 ${humanMessages.length}개`}
+            {turnLogs.length > 0 && ` · 턴 로그 ${turnLogs.length}행`}
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
