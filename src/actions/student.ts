@@ -2,12 +2,11 @@
 
 import { revalidatePath } from 'next/cache';
 import { createServerClient } from '@/lib/supabase-server';
-import { callAI } from '@/lib/ai';
 import { nextPhase, cycleKeyFromPhase } from '@/lib/phases';
 import { initDASession, processTurn, createInitialState } from '@/lib/da-pipeline';
-import type { AssessorRefs, TurnResult } from '@/lib/da-pipeline';
+import type { TurnResult } from '@/lib/da-pipeline';
 import type { UnitTurn } from '@/lib/da-nodes';
-import type { APISettings, Prompts, SessionData, AIMessage, Phase, DASessionState, ComprehensionQuestion } from '@/types';
+import type { APISettings, SessionData, AIMessage, Phase, DASessionState, ComprehensionQuestion } from '@/types';
 
 // ─── Session data ─────────────────────────────────────────────────────────────
 
@@ -130,25 +129,10 @@ async function loadPromptAssets(
 ): Promise<Record<string, string>> {
   const { data } = await supabase.from('prompt_assets').select('key, content');
   const map = Object.fromEntries((data ?? []).map((r: { key: string; content: string }) => [r.key, r.content]));
-  // 과제별(cycle) 지식자료를 현재 phase에 맞춰 knowledge_active 로 노출한다.
-  // 이 값은 과제평가(Assessor)에서만 쓰인다 — DA 채팅(Mediator)은 읽지 않는다.
+  // 과제별(cycle) 지식자료(모범 요약문·IU 표·중요도)를 현재 phase에 맞춰 knowledge_active 로 노출한다.
+  // 과제평가(Assessor)와 중재 발화 턴이 함께 쓴다 (오프닝·복구 턴에는 전달하지 않는다).
   map['knowledge_active'] = map[`knowledge_${cycleKeyFromPhase(phase)}`] ?? '';
   return map;
-}
-
-// Assessor 참조자료 — 현재 phase의 과제(cycle)에 딸린 IU 표.
-// 진단 전용이며 학생에게는 노출하지 않는다. 컬럼이 아직 없으면 조용히 빈 값으로 둔다.
-async function loadAssessorRefs(
-  supabase: ReturnType<typeof createServerClient>,
-  phase: string,
-): Promise<AssessorRefs> {
-  const { data, error } = await supabase
-    .from('passages')
-    .select('idea_units')
-    .eq('cycle_key', cycleKeyFromPhase(phase))
-    .single();
-  if (error || !data) return {};
-  return { ideaUnits: (data.idea_units ?? []) as AssessorRefs['ideaUnits'] };
 }
 
 // 한 탭(항목) 안의 대화 기록. DA 파이프라인의 채팅 노드들이 현황 파악에 쓴다.
@@ -215,10 +199,9 @@ export async function startDASession(
   const existing = await getDASessionState(studentId, phase);
   if (existing) return { state: existing };
 
-  const [apiRes, prompts, refs] = await Promise.all([
+  const [apiRes, prompts] = await Promise.all([
     supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
     loadPromptAssets(supabase, phase),
-    loadAssessorRefs(supabase, phase),
   ]);
   if (!apiRes.data) return { state: createInitialState(), error: 'API 설정이 없습니다.' };
 
@@ -226,7 +209,7 @@ export async function startDASession(
     // initDASession returns the opening utterance too, so no separate
     // generateOpeningMessage call is needed here.
     const { state, openingUtterance } = await initDASession(
-      summary, passageContent, prompts, apiRes.data, refs
+      summary, passageContent, prompts, apiRes.data
     );
     await saveDASessionState(supabase, studentId, phase, state);
 
@@ -274,10 +257,13 @@ export async function sendDAMessage(
 ): Promise<TurnResult & { error?: string }> {
   const supabase = createServerClient();
 
-  const [apiRes, prompts, currentState] = await Promise.all([
+  const [apiRes, prompts, currentState, summaryRes] = await Promise.all([
     supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
     loadPromptAssets(supabase, phase),
     getDASessionState(studentId, phase),
+    // Analysis 가 학생 요약문 전체를 참고자료로 받는다 (근거 인용의 문맥 확인용).
+    supabase.from('session_data').select('summary')
+      .eq('student_id', studentId).eq('phase', phase).maybeSingle(),
   ]);
 
   const fail = (error: string, state?: DASessionState): TurnResult & { error: string } => ({
@@ -303,7 +289,11 @@ export async function sendDAMessage(
       studentMessage,
       latestTutorUtterance,
       history,
-      { sourceText: passageContent, cycleKnowledge: prompts['knowledge_active'] ?? '' },
+      {
+        sourceText: passageContent,
+        studentSummary: (summaryRes.data?.summary as string | null) ?? '',
+        cycleKnowledge: prompts['knowledge_active'] ?? '',
+      },
       prompts,
       apiRes.data,
     );
@@ -322,7 +312,7 @@ export async function sendDAMessage(
   }
 }
 
-// ─── AI Chat ──────────────────────────────────────────────────────────────────
+// ─── AI Chat 기록 ─────────────────────────────────────────────────────────────
 
 export async function getAIMessages(studentId: string, phase: string): Promise<AIMessage[]> {
   const supabase = createServerClient();
@@ -333,93 +323,4 @@ export async function getAIMessages(studentId: string, phase: string): Promise<A
     .eq('phase', phase)
     .order('created_at', { ascending: true });
   return (data ?? []) as AIMessage[];
-}
-
-export async function submitToAI(
-  studentId: string,
-  phase: string,
-  summary: string,
-  passageContent: string,
-): Promise<{ reply?: string; error?: string }> {
-  const supabase = createServerClient();
-
-  const [apiRes, promptsRes] = await Promise.all([
-    supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
-    supabase.from('prompts').select('*').eq('id', 1).single<Prompts>(),
-  ]);
-
-  if (!apiRes.data || !promptsRes.data) return { error: 'API 설정이 없습니다.' };
-  if (!apiRes.data.openai_key && !apiRes.data.anthropic_key && !apiRes.data.gemini_key) {
-    return { error: 'API 키가 설정되지 않았습니다.' };
-  }
-
-  const api = apiRes.data;
-  const prompts = promptsRes.data;
-
-  // Save summary and mark submitted
-  await supabase.from('session_data').upsert(
-    {
-      student_id: studentId,
-      phase,
-      summary,
-      submitted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'student_id,phase' },
-  );
-
-  // First AI message is the DA prompt
-  const userMessage = { role: 'user' as const, content: prompts.da_prompt };
-
-  try {
-    const reply = await callAI([userMessage], passageContent, summary, prompts, api);
-
-    await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'user', content: prompts.da_prompt },
-      { student_id: studentId, phase, role: 'assistant', content: reply },
-    ]);
-
-    return { reply };
-  } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : 'AI 호출 실패' };
-  }
-}
-
-export async function sendAIMessage(
-  studentId: string,
-  phase: string,
-  userContent: string,
-  passageContent: string,
-  summary: string,
-): Promise<{ reply?: string; error?: string }> {
-  const supabase = createServerClient();
-
-  const [apiRes, promptsRes, historyRes] = await Promise.all([
-    supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
-    supabase.from('prompts').select('*').eq('id', 1).single<Prompts>(),
-    supabase
-      .from('ai_messages')
-      .select('role, content')
-      .eq('student_id', studentId)
-      .eq('phase', phase)
-      .order('created_at', { ascending: true }),
-  ]);
-
-  if (!apiRes.data || !promptsRes.data) return { error: 'API 설정이 없습니다.' };
-
-  const history = (historyRes.data ?? []) as { role: 'user' | 'assistant'; content: string }[];
-  const messages = [...history, { role: 'user' as const, content: userContent }];
-
-  try {
-    const reply = await callAI(messages, passageContent, summary, promptsRes.data, apiRes.data);
-
-    await supabase.from('ai_messages').insert([
-      { student_id: studentId, phase, role: 'user', content: userContent },
-      { student_id: studentId, phase, role: 'assistant', content: reply },
-    ]);
-
-    return { reply };
-  } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : 'AI 호출 실패' };
-  }
 }

@@ -2,177 +2,175 @@
 //
 // 역할 분담:
 //   da-state.ts  상태 전이·라우팅 (LLM 없음, 순수 함수)
-//   da-nodes.ts  LLM 노드 3개 (Analysis / Mediator / Confirmation)
-//   이 파일       둘을 엮는 오케스트레이션 + Assessor
-//
-// 프롬프트(prompt_mediator_common / prompt_analysis)가 "코드가 결정한다"고 명시한
-// 항목은 모두 코드에 있고, Mediator 는 발화 생성만 한다.
+//   da-nodes.ts  LLM 노드 (턴마다 프롬프트 자산 하나)
+//   da-output.ts 호출별 출력 계약 (코드 소유)
+//   이 파일       셋을 엮는 오케스트레이션 + Assessor
 
 import { callLLMNode } from './ai';
 import type {
   APISettings,
+  AssessmentItem,
   AssessorOutput,
   DASessionState,
   ResponseContext,
   UnitOutcome,
 } from '@/types';
-import descriptorsData from '@/data/descriptors.json';
+import { descriptorBlockAll, itemsFrom } from './descriptors';
 import {
-  advanceTo, applyAnalysis, checkpointReached, closeUnit, designateSecondaryTab,
-  isTerminalStep, newUnit, nextDestination, unitOf,
+  MAX_TABS, advanceTo, applyClassification, applyGoalVerdict, closeUnit,
+  isTerminalStep, newUnit, nextDestination, orderedAssessment, reconcileWithUtterance,
 } from './da-state';
-import { runAnalysis, runConfirmation, runMediator, type UnitTurn } from './da-nodes';
+import {
+  runAnalysis, runClosing, runConfirmInvite, runConfirmation, runMediation, runOpening,
+  runPostConfirm, runProvision, runRecovery, type MediationContext, type UnitTurn,
+} from './da-nodes';
+import { OUTPUT_ASSESSOR, withOutputContract } from './da-output';
 
 // ─── Assessor ─────────────────────────────────────────────────────────────────
-
-function buildDescriptorBlock(): string {
-  return descriptorsData.items
-    .map((item) => {
-      const dList = item.descriptors
-        .map((d) => `  - ${d.key}: ${d.definition} | 탐지신호: ${d.signal}`)
-        .join('\n');
-      return `[${item.key}] ${item.label}\n${dList}`;
-    })
-    .join('\n\n');
-}
 
 function prependSystem(prompts: Record<string, string>, sysPrompt: string): string {
   const overview = prompts['prompt_system']?.trim();
   return overview ? `${overview}\n\n---\n\n${sysPrompt}` : sysPrompt;
 }
 
-// 계획이 없을 때만 쓰는 순서 폴백 (higher-order concerns first).
-const HOC_ORDER = [
-  'main_idea_coverage', 'content_accuracy', 'organization',
-  'condensation', 'paraphrasing', 'language_use',
-];
-
-export function tabsFromPlan(assessorOutput: AssessorOutput): string[] {
-  const targets = assessorOutput?.mediation_targets;
-  if (targets?.length) {
-    // Assessor 가 Step 2 에서 정한 순서를 그대로 쓴다. 재계산하지 않는다.
-    return [...targets].sort((a, b) => a.tab - b.tab).map((t) => t.item).slice(0, 3);
-  }
-  if (!assessorOutput?.items) return [];
-  return HOC_ORDER
-    .filter((k) => (assessorOutput.items[k]?.detected_descriptors?.length ?? 0) > 0)
-    .slice(0, 3);
+export function tabsFromPlan(assessorOutput: AssessorOutput | null): string[] {
+  return orderedAssessment(assessorOutput).map((t) => t.item);
 }
 
-export type AssessorRefs = {
-  ideaUnits?: { id: string; text: string; importance: string }[];
-};
-
+// Assessor 의 user 입력. IU 표·모범 요약문·중요도는 별도 자료가 아니라
+// knowledge_<cycle> 안에 들어 있다 (passages.idea_units 컬럼은 폐기).
 function assessorSourceBlock(
   summary: string,
   passageContent: string,
   prompts: Record<string, string>,
-  refs: AssessorRefs,
 ): string {
   const knowledge = prompts['knowledge_active']?.trim();
   const knowledgeBlock = knowledge ? `\n\n[CYCLE KNOWLEDGE RESOURCE]\n${knowledge}` : '';
-  const iuBlock = refs.ideaUnits?.length
-    ? '\n\n[IU TABLE]\n' + refs.ideaUnits.map((u) => `- (${u.importance}) ${u.text}`).join('\n')
-    : '';
-  return `[SOURCE TEXT]\n${passageContent}${knowledgeBlock}${iuBlock}\n\n[STUDENT SUMMARY]\n${summary}`;
-}
-
-function parseJson(raw: string, label: string): Record<string, unknown> {
-  const json = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!json) throw new Error(`${label} returned non-JSON output: ${raw.slice(0, 200)}`);
-  return JSON.parse(json);
-}
-
-// 턴 2 의 severity 맵을 턴 1 의 items 진단에 병합한다 (downstream 이 detected_descriptors[].severity 를 읽음).
-function mergeSeverity(
-  items: AssessorOutput['items'],
-  severity: Record<string, Record<string, string>> | undefined,
-): AssessorOutput['items'] {
-  if (!severity) return items;
-  for (const [item, diag] of Object.entries(items ?? {})) {
-    for (const d of diag.detected_descriptors ?? []) {
-      const s = severity[item]?.[d.key];
-      if (s === 'high' || s === 'medium' || s === 'low') d.severity = s;
-    }
-  }
-  return items;
-}
-
-// 턴 1 — 진단 + 다룰 항목 선택 (심각도·순서 없음).
-async function runAssessorSelect(
-  summary: string, passageContent: string,
-  prompts: Record<string, string>, api: APISettings, refs: AssessorRefs,
-): Promise<{ items: AssessorOutput['items']; selected_items: unknown[] }> {
-  const sysPrompt = prompts['prompt_assessor_select']?.trim() ||
-    `Diagnose the summary against the 6 items / 16 descriptors below and select up to 3 items
-to mediate (with evidence). Do NOT assign severity or order. Respond ONLY with JSON:
-{ "items": {...}, "selected_items": [...] }
-
-## Descriptor Reference
-${buildDescriptorBlock()}`;
-  const userInput = assessorSourceBlock(summary, passageContent, prompts, refs);
-  const parsed = parseJson(await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api), 'Assessor(select)');
-  return {
-    items: (parsed.items ?? {}) as AssessorOutput['items'],
-    selected_items: (parsed.selected_items ?? []) as unknown[],
-  };
-}
-
-// 턴 2 — 심각도 산출 + 제시 순서 + 목표. 턴 1 출력을 입력으로 받는다.
-async function runAssessorOrder(
-  turn1: { items: AssessorOutput['items']; selected_items: unknown[] },
-  summary: string, passageContent: string,
-  prompts: Record<string, string>, api: APISettings, refs: AssessorRefs,
-): Promise<{ severity?: Record<string, Record<string, string>>; mediation_targets: AssessorOutput['mediation_targets'] }> {
-  const sysPrompt = prompts['prompt_assessor_order']?.trim() ||
-    `Given the Turn-1 diagnosis, assign severity to each detected descriptor, order the selected
-items (higher-order concerns first), and define PI/PSV goals (+ optional secondary). Respond ONLY
-with JSON: { "severity": {...}, "mediation_targets": [...] }`;
-  const userInput = `${assessorSourceBlock(summary, passageContent, prompts, refs)}
-
-[TURN 1 — DIAGNOSIS]
-${JSON.stringify({ items: turn1.items, selected_items: turn1.selected_items }, null, 2)}`;
-  const parsed = parseJson(await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api), 'Assessor(order)');
-  return {
-    severity: parsed.severity as Record<string, Record<string, string>> | undefined,
-    mediation_targets: (parsed.mediation_targets ?? []) as AssessorOutput['mediation_targets'],
-  };
+  return `[SOURCE TEXT]\n${passageContent}${knowledgeBlock}\n\n[STUDENT SUMMARY]\n${summary}`;
 }
 
 /**
- * Assessor — 2턴 파이프라인.
- *   턴 1(select): 진단 + 항목 선택 + 근거   →  턴 2(order): 심각도 + 순서 + 목표.
- * prompt_assessor_select 가 없으면 구 단일 프롬프트(prompt_assessor)로 폴백한다.
+ * 응답에서 JSON 값을 뽑아낸다.
+ *
+ * 프롬프트가 "JSON only" 를 지시하지 않으면 모델은 추론 서술을 앞에 붙이고
+ * ```json 펜스 안에 결과를 넣는다. 최상위 값이 객체가 아니라 배열일 수도 있다.
+ * 그래서 (1) 코드펜스 안, (2) 본문 전체 순으로 괄호 균형을 맞춰 스캔하고,
+ * 파싱에 성공하는 첫 값을 돌려준다.
+ */
+function extractJsonValue(raw: string): unknown {
+  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]);
+  for (const text of [...fences, raw]) {
+    for (const candidate of balancedCandidates(text)) {
+      try { return JSON.parse(candidate); } catch { /* 다음 후보 */ }
+    }
+  }
+  return undefined;
+}
+
+/** 문자열 리터럴을 건너뛰며 괄호가 닫히는 지점까지를 후보로 잘라 낸다. */
+function* balancedCandidates(text: string): Generator<string> {
+  for (let i = 0; i < text.length; i++) {
+    const open = text[i];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === open) depth++;
+      else if (c === close && --depth === 0) { yield text.slice(i, j + 1); break; }
+    }
+  }
+}
+
+// prompt_assessor 가 비어 있을 때만 쓰이는 폴백. 출력 형식은 여기 쓰지 않는다 —
+// 계약은 da-output.ts 가 소유하고 코드가 프롬프트 뒤에 붙인다.
+const ASSESSOR_FALLBACK = `You are the Assessor of a Dynamic Assessment pipeline for EFL summary writing.
+Diagnose the learner's summary and select at most ${MAX_TABS} assessment items that genuinely
+require mediation.
+
+- problem_priority: relative need for mediation among the selected items (1 = greatest need).
+- presentation_order: instructional order in the feedback session (1 = presented first).
+  The two need not match — sequence the session higher-order concerns first.
+- PI_goal / PSV_goal: what the learner must understand (PI) and be able to explain in their
+  own words (PSV). One sentence each.`;
+
+/** Assessor 출력 정규화 — 순위 결측/중복을 코드가 메운다. */
+function normalizeAssessment(raw: unknown, itemKeys: Set<string>): AssessmentItem[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const ITEM_KEYS = itemKeys;
+  const num = (v: unknown, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  // 프롬프트는 인용 1~2개를 배열로 요구하지만, 모델이 문자열 하나로 낼 때도 받아 준다.
+  const quotes = (v: unknown): string[] =>
+    (Array.isArray(v) ? v : [v]).filter((q): q is string => typeof q === 'string' && q.trim() !== '');
+
+  const seen = new Set<string>();
+  return list
+    .filter((t): t is Record<string, unknown> => !!t && typeof t === 'object')
+    .filter((t) => ITEM_KEYS.has(String(t.item)))
+    // 항목 하나 = 탭 하나. 같은 항목이 중복되면 탭 키가 겹치므로 첫 번째만 남긴다.
+    .filter((t) => !seen.has(String(t.item)) && seen.add(String(t.item)))
+    .map((t, i) => ({
+      item: String(t.item),
+      problem_priority: num(t.problem_priority, i + 1),
+      presentation_order: num(t.presentation_order, num(t.problem_priority, i + 1)),
+      problem_description: str(t.problem_description),
+      student_text_evidence: quotes(t.student_text_evidence),
+      selection_rationale: str(t.selection_rationale),
+      mediation_focus: str(t.mediation_focus),
+      PI_goal: str(t.PI_goal),
+      PSV_goal: str(t.PSV_goal),
+    }))
+    .slice(0, MAX_TABS);
+}
+
+/**
+ * Assessor — 단일 호출.
+ *
+ * 입력: prompt_system(과제 개요) + prompt_assessor + 평가 기준 6항목(descriptors)
+ *       + knowledge_<cycle>(지식자료) + 지문 + 학생 요약문
+ * 출력: 중재할 항목 목록 — 항목별 우선순위·제시순서·문제·근거·선정근거·초점·PI/PSV 목표.
  */
 export async function runAssessor(
   summary: string,
   passageContent: string,
   prompts: Record<string, string>,
   api: APISettings,
-  refs: AssessorRefs = {},
 ): Promise<AssessorOutput> {
-  // ── 폴백: 2턴 프롬프트가 없으면 단일 호출 ──
-  if (!prompts['prompt_assessor_select']?.trim() && prompts['prompt_assessor']?.trim()) {
-    const userInput = assessorSourceBlock(summary, passageContent, prompts, refs);
-    const parsed = parseJson(
-      await callLLMNode(prependSystem(prompts, prompts['prompt_assessor']), userInput, api),
-      'Assessor',
-    );
-    if (!parsed.items) {
-      const ITEM_KEYS = new Set(descriptorsData.items.map((i) => i.key));
-      if (Object.keys(parsed).some((k) => ITEM_KEYS.has(k))) return { items: parsed } as AssessorOutput;
-      throw new Error('Assessor output missing "items".');
-    }
-    return parsed as unknown as AssessorOutput;
+  const items = itemsFrom(prompts);
+  const base = prompts['prompt_assessor']?.trim() || ASSESSOR_FALLBACK;
+  // 평가 기준(6항목 전체)과 출력 계약은 프롬프트가 아니라 코드가 붙인다.
+  const sysPrompt = withOutputContract(
+    `${base}
+
+---
+
+${descriptorBlockAll(items)}`,
+    OUTPUT_ASSESSOR,
+  );
+  const userInput = assessorSourceBlock(summary, passageContent, prompts);
+  const raw = await callLLMNode(prependSystem(prompts, sysPrompt), userInput, api);
+  const parsed = extractJsonValue(raw);
+  if (parsed === undefined) {
+    throw new Error(`Assessor 응답에서 JSON 을 찾지 못했습니다: ${raw.slice(0, 200)}`);
   }
 
-  // ── 2턴 ──
-  const turn1 = await runAssessorSelect(summary, passageContent, prompts, api, refs);
-  const turn2 = await runAssessorOrder(turn1, summary, passageContent, prompts, api, refs);
-  return {
-    items: mergeSeverity(turn1.items, turn2.severity),
-    mediation_targets: turn2.mediation_targets,
-  };
+  // 최상위가 배열일 수도, 래퍼 객체일 수도 있다 (프롬프트 판에 따라 다르다).
+  const root = parsed as Record<string, unknown>;
+  const assessment = normalizeAssessment(
+    Array.isArray(parsed) ? parsed : root.selected_items ?? root.assessment ?? root.items,
+    new Set(items.map((i) => i.key)),
+  );
+  if (!assessment.length) throw new Error('Assessor 가 중재 항목을 반환하지 않았습니다 (selected_items 없음).');
+  return { assessment };
 }
 
 // ─── 세션 상태 ────────────────────────────────────────────────────────────────
@@ -181,10 +179,7 @@ export function createInitialState(): DASessionState {
   return {
     priority_queue: [],
     current_item_idx: 0,
-    active_unit: newUnit(1, '', 'primary'),
-    secondary_designated_tab: null,
-    secondary_used: false,
-    closing_checkpoint_reached: false,
+    active_unit: newUnit(1, ''),
     session_started_at: null,
     closing_phase: false,
     awaiting_confirmation: false,
@@ -200,9 +195,7 @@ function buildInitState(assessor: AssessorOutput): DASessionState {
   return {
     ...createInitialState(),
     priority_queue: queue,
-    active_unit: newUnit(1, queue[0] ?? '', 'primary'),
-    // 보조 유닛은 Assessor 출력이 확정된 지금 한 번만 지정한다 (탭 3개면 없음).
-    secondary_designated_tab: designateSecondaryTab(assessor),
+    active_unit: newUnit(1, queue[0] ?? ''),
     session_started_at: new Date().toISOString(),
     assessor_output: assessor,
   };
@@ -210,6 +203,7 @@ function buildInitState(assessor: AssessorOutput): DASessionState {
 
 export type TurnContext = {
   sourceText: string;
+  studentSummary: string;   // Analysis 가 근거 인용을 문맥 안에서 해석할 때 쓴다
   cycleKnowledge: string;
 };
 
@@ -218,18 +212,25 @@ export async function initDASession(
   passageContent: string,
   prompts: Record<string, string>,
   api: APISettings,
-  refs: AssessorRefs = {},
 ): Promise<{ state: DASessionState; openingUtterance: string }> {
-  const assessor = await runAssessor(summary, passageContent, prompts, api, refs);
+  const assessor = await runAssessor(summary, passageContent, prompts, api);
   const state = buildInitState(assessor);
   const openingUtterance = await mediate(state, 'opening', [], undefined, {
     sourceText: passageContent,
+    studentSummary: summary,
     cycleKnowledge: prompts['knowledge_active'] ?? '',
   }, prompts, api);
   return { state, openingUtterance };
 }
 
-// Mediator 호출 래퍼 — 세션 수준 정보를 함께 넘긴다.
+// 턴별 발화 라우터. LLM 호출 턴마다 프롬프트 자산이 다르다.
+//   opening                                → prompt_opening
+//   confusion_rephrase / off_topic_redirect → prompt_recovery
+//   on_track_continue (step 1~4)           → prompt_mediation
+//   on_track_continue (step 5, terminal)   → prompt_provision
+//   confirmation_invite                    → prompt_confirm_invite
+//   post_confirmation_help                 → prompt_post_confirm
+//   session_closing                        → prompt_closing
 async function mediate(
   state: DASessionState,
   ctx: ResponseContext,
@@ -238,25 +239,43 @@ async function mediate(
   turnCtx: TurnContext,
   prompts: Record<string, string>,
   api: APISettings,
+  previousTutorUtterance = '',
 ): Promise<string> {
-  return runMediator(
-    state.assessor_output,
-    state.active_unit,
-    ctx,
-    {
-      latestLearnerResponse,
+  const unit = state.active_unit;
+
+  if (ctx === 'opening') {
+    return runOpening(unit, state.priority_queue.length, prompts, api);
+  }
+  if (ctx === 'confusion_rephrase' || ctx === 'off_topic_redirect') {
+    return runRecovery(
+      unit,
+      ctx === 'confusion_rephrase' ? 'confusion' : 'off_topic',
+      previousTutorUtterance,
+      latestLearnerResponse ?? '',
       history,
-      completedUnits: state.completed_units,
-      totalTabs: state.priority_queue.length,
-      secondaryDesignated: state.secondary_designated_tab != null,
-      secondaryUsed: state.secondary_used,
-      checkpointReached: state.closing_checkpoint_reached,
-      sourceText: turnCtx.sourceText,
-      cycleKnowledge: turnCtx.cycleKnowledge,
-    },
-    prompts,
-    api,
-  );
+      prompts,
+      api,
+    );
+  }
+
+  const mctx: MediationContext = {
+    latestLearnerResponse,
+    history,
+    completedUnits: state.completed_units,
+    totalTabs: state.priority_queue.length,
+    sourceText: turnCtx.sourceText,
+    studentSummary: turnCtx.studentSummary,
+    cycleKnowledge: turnCtx.cycleKnowledge,
+  };
+  const assessor = state.assessor_output;
+
+  if (ctx === 'confirmation_invite') return runConfirmInvite(assessor, unit, mctx, prompts, api);
+  if (ctx === 'post_confirmation_help') return runPostConfirm(assessor, unit, mctx, prompts, api);
+  if (ctx === 'session_closing') return runClosing(assessor, unit, mctx, prompts, api);
+
+  // on_track_continue — 여기로 오는 것은 5단계(terminal)뿐이다.
+  // 1~4단계는 판정을 함께 내야 해서 processTurn 이 runMediation 을 직접 부른다.
+  return runProvision(assessor, unit, mctx, prompts, api);
 }
 
 // ─── 턴 처리 ──────────────────────────────────────────────────────────────────
@@ -285,11 +304,11 @@ async function closeAndAdvance(
 ): Promise<{ state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean }> {
   const closed = state.active_unit;
   let next = closeUnit(state, outcome, principle);
-  const dest = nextDestination(next, closed, outcome);
+  const dest = nextDestination(next);
   next = advanceTo(next, dest);
 
   if (dest.kind === 'closing') {
-    const utterance = await mediate(next, 'session_closing_invite', [], undefined, turnCtx, prompts, api);
+    const utterance = await mediate(next, 'session_closing', [], undefined, turnCtx, prompts, api);
     return { state: next, sameTabText: utterance, tabUnlocked: false };
   }
   const utterance = await mediate(next, 'opening', [], undefined, turnCtx, prompts, api);
@@ -326,17 +345,18 @@ export async function processTurn(
   prompts: Record<string, string>,
   api: APISettings,
 ): Promise<TurnResult> {
-  // 25분 체크포인트는 매 턴 갱신한다 (새 유닛 시작 금지용).
-  let s: DASessionState = {
-    ...state,
-    closing_checkpoint_reached:
-      state.closing_checkpoint_reached || checkpointReached(state.session_started_at),
-  };
+  let s: DASessionState = { ...state };
 
-  // ── 종료 단계: 학생 질문에 직접 답한다 (DA 형식으로 만들지 않는다) ──
+  // ── 종료 단계: 세션은 이미 끝났다. LLM 을 부르지 않는다.
+  //    (UI 도 해결된 탭에서는 입력창을 숨기므로 보통 여기까지 오지 않는다.) ──
   if (s.closing_phase) {
-    const utterance = await mediate(s, 'final_question_answer', history, learnerMessage, turnCtx, prompts, api);
-    return { utterance, updated_state: s, classification: 'closing', tab_unlocked: false, session_complete: false };
+    return {
+      utterance: '이번 세션은 여기서 마무리되었어요. 수고 많으셨습니다.',
+      updated_state: s,
+      classification: 'closing',
+      tab_unlocked: false,
+      session_complete: true,
+    };
   }
 
   // ── 전환 확인 대기 중: Analysis 가 아니라 Confirmation 으로 보낸다 ──
@@ -368,37 +388,87 @@ export async function processTurn(
     return toResult(adv, '', 'confirmation');
   }
 
-  // ── 통상 턴: Analysis → 상태 전이 → Mediator ──
-  const verdict = await runAnalysis(
-    s.assessor_output, s.active_unit, latestTutorUtterance, learnerMessage, history, prompts, api,
+  // ── 통상 턴 ──
+  //   ③ Analysis 가 분류와 목표 판정을 함께 낸다.
+  //   코드가 목표·단계를 확정한 뒤, ⑤ Mediation 이 그 자리에서 발화만 만든다.
+  const analysis = await runAnalysis(
+    s.assessor_output, s.active_unit, latestTutorUtterance, learnerMessage, history,
+    {
+      sourceText: turnCtx.sourceText,
+      studentSummary: turnCtx.studentSummary,
+      cycleKnowledge: turnCtx.cycleKnowledge,
+    },
+    prompts, api,
   );
-  const { unit, route } = applyAnalysis(s.active_unit, verdict);
+  const { unit, context } = applyClassification(s.active_unit, analysis.classification);
   s = { ...s, active_unit: unit };
 
-  if (route.kind === 'confirmation') {
-    // 양쪽 충족 → Mediator 가 마무리하며 전환 질문을 던지고, 다음 응답을 Confirmation 이 판정한다.
-    const utterance = await mediate(s, 'on_track_continue', history, learnerMessage, turnCtx, prompts, api);
+  // 복구 발화 (confusion / off_topic) — 판정 없이 되돌리기만 한다.
+  if (context !== 'on_track_continue') {
+    const utterance = await mediate(
+      s, context, history, learnerMessage, turnCtx, prompts, api, latestTutorUtterance,
+    );
     return {
       utterance,
-      updated_state: { ...s, awaiting_confirmation: true },
-      classification: 'on_track',
+      updated_state: s,
+      classification: analysis.classification,
       tab_unlocked: false,
       session_complete: false,
     };
   }
 
-  const utterance = await mediate(s, route.context, history, learnerMessage, turnCtx, prompts, api);
+  // 판정을 상태에 반영한다. 이탈 탈출 턴은 판정이 없어 목표·단계가 유지된다.
+  const applied = applyGoalVerdict(s.active_unit, analysis.verdict);
+  s = { ...s, active_unit: applied.unit };
 
-  // Step 5 는 terminal — 응답을 기다리지 않고 유닛을 닫는다. 보조 유닛도 열지 않는다.
-  if (route.context === 'on_track_continue' && isTerminalStep(s.active_unit)) {
-    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', utterance, turnCtx, prompts, api);
-    return toResult(adv, utterance, verdict.classification);
+  if (applied.bothSufficient) {
+    // 양쪽 충족 → 유닛을 마무리하며 전환 질문을 던지고, 다음 응답을 Confirmation 이 판정한다.
+    const utterance = await mediate(s, 'confirmation_invite', history, learnerMessage, turnCtx, prompts, api);
+    return {
+      utterance,
+      updated_state: { ...s, awaiting_confirmation: true },
+      classification: analysis.classification,
+      tab_unlocked: false,
+      session_complete: false,
+    };
   }
 
+  // 5단계는 terminal — 답을 직접 제공한 뒤 유닛을 닫는다.
+  if (isTerminalStep(s.active_unit)) {
+    const utterance = await mediate(
+      s, 'on_track_continue', history, learnerMessage, turnCtx, prompts, api,
+    );
+    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', utterance, turnCtx, prompts, api);
+    return toResult(adv, utterance, analysis.classification);
+  }
+
+  // ⑤ 확정된 목표·단계에서 발화를 만든다.
+  const mediation = await runMediation(
+    s.assessor_output, s.active_unit,
+    {
+      latestLearnerResponse: learnerMessage,
+      history,
+      completedUnits: s.completed_units,
+      totalTabs: s.priority_queue.length,
+      sourceText: turnCtx.sourceText,
+      studentSummary: turnCtx.studentSummary,
+      cycleKnowledge: turnCtx.cycleKnowledge,
+    },
+    { ...analysis.verdict, rationale: analysis.rationale },
+    prompts, api,
+  );
+
+  // 발화가 실제로 쓴 목표·단계에 기록을 맞춘다 (학생이 본 것이 사실이다).
+  const reconciled = reconcileWithUtterance(s.active_unit, mediation.used);
+  if (reconciled.mismatch) {
+    console.warn(`[DA] 탭 ${s.active_unit.tab} ${s.active_unit.item}: ${reconciled.mismatch}`);
+  }
+  s = { ...s, active_unit: reconciled.unit };
+
   return {
-    utterance,
+    utterance: mediation.utterance ?? '',
     updated_state: s,
-    classification: verdict.classification,
+    classification: analysis.classification,
     tab_unlocked: false,
     session_complete: false,
   };

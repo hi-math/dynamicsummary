@@ -1,0 +1,138 @@
+## Procedure
+
+### Step 1. Review the assessment framework.
+
+Before evaluating the student's summary, carefully review the following six assessment items and use them as your evaluation framework throughout the assessment.
+
+1. **main_idea_coverage**
+Evaluate whether the student's summary adequately covers the main ideas of the source text.
+
+2. **condensation**
+Evaluate whether unnecessary details are appropriately omitted and important information is effectively condensed.
+
+3. **content_accuracy**
+Evaluate whether the student's summary accurately represents the meaning of the source text without distortion.
+
+4. **paraphrasing**
+Evaluate whether the student expresses the source ideas primarily in their own words rather than relying excessively on the original wording.
+
+5. **organization**
+Evaluate whether the summary is logically organized and coherent.
+
+6. **language_use**
+Evaluate grammar, vocabulary, sentence construction, and overall language quality.
+
+Each assessment item contains multiple descriptors.
+
+Use the descriptors only as INTERNAL evaluation criteria.
+
+Do NOT output descriptor names, descriptor IDs, descriptor scores, or descriptor detection results.
+
+---
+
+### Step 2. Review the reference materials.
+
+Review the following materials while keeping all six assessment items in mind.
+
+- SOURCE_TEXT
+- STUDENT_SUMMARY
+- knowledge_cycle
+  - model summary
+  - IU table
+  - IU importance levels
+  - researcher notes
+
+Use the knowledge_cycle as reference information when evaluating main_idea_coverage, condensation, content_accuracy, and organization.
+
+The SOURCE_TEXT remains the primary reference.
+
+The model summary is only one acceptable summary. Do NOT judge a summary as incorrect simply because it differs from the model summary if it accurately represents the source text.
+
+---
+
+### Step 3. Evaluate all six assessment items.
+
+Evaluate the student's summary from all six assessment perspectives.
+
+For each assessment item, determine:
+
+- whether a meaningful problem exists,
+- how much it affects overall meaning,
+- how broadly it appears,
+- whether it forms a repeated pattern,
+- whether it is educationally worthwhile to mediate.
+
+Do NOT select mediation targets yet.
+
+
+### Step 4. Select mediation targets.
+
+Select at most THREE assessment items.
+
+- Select only items that genuinely require mediation.
+- If fewer than three meaningful problems exist, return fewer than three items.
+- Do NOT select multiple items representing essentially the same underlying problem.
+- Prioritize educational value rather than simply counting errors.
+
+---
+
+### Step 5. Assign problem_priority.
+
+Compare ONLY the selected assessment items.
+
+problem_priority represents the relative mediation priority among the selected items.
+
+It is NOT an absolute severity score.
+
+Determine priority by considering:
+
+- impact on overall meaning,
+- scope of the problem,
+- recurrence,
+- educational importance.
+
+Assign
+
+1 = highest mediation priority
+
+2 = second
+
+3 = third
+
+---
+
+### Step 6. Determine presentation_order.
+
+presentation_order represents the instructional sequence for mediation.
+
+It is independent of problem_priority.
+
+Always organize the selected items according to:
+
+HOC → Mid-Level → LOC
+
+Assign
+
+presentation_order = 1 for HOC
+
+presentation_order = 2 for Mid-Level
+
+presentation_order = 3 for LOC
+
+If multiple items belong to the same instructional level, preserve the order determined by problem_priority.
+
+---
+
+### Step 7. Generate the required information for each selected item.
+
+Generate:
+
+- item
+- problem_priority
+- presentation_order
+- problem_description
+- student_text_evidence
+- selection_rationale
+- mediation_focus
+- PI_goal
+- PSV_goal

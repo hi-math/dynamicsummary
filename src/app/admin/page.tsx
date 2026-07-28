@@ -4,7 +4,6 @@ import AdminClient from './AdminClient';
 import {
   getUsers,
   getAPISettings,
-  getPrompts,
   getPassages,
   getAllStudentsData,
   getMentors,
@@ -16,10 +15,9 @@ export default async function AdminPage() {
   const session = await getSession();
   if (!session || session.role !== 'admin') redirect('/');
 
-  const [users, api, prompts, passages, studentsData, mentors, promptAssets, comprehensionQs] = await Promise.all([
+  const [users, api, passages, studentsData, mentors, promptAssets, comprehensionQs] = await Promise.all([
     getUsers(),
     getAPISettings(),
-    getPrompts(),
     getPassages(),
     getAllStudentsData(),
     getMentors(),
@@ -32,7 +30,6 @@ export default async function AdminPage() {
       session={session}
       initialUsers={users}
       initialAPI={api}
-      initialPrompts={prompts}
       initialPassages={passages}
       initialStudentsData={studentsData}
       initialMentors={mentors}

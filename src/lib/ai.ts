@@ -1,17 +1,6 @@
-import type { APISettings, Prompts } from '@/types';
+import type { APISettings } from '@/types';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
-
-function buildSystemPrompt(prompts: Prompts, passageContent: string, summary: string): string {
-  return `${prompts.system_prompt}
-
----
-[현재 지문]
-${passageContent}
-
-[학생의 요약문]
-${summary}`;
-}
 
 async function callOpenAI(
   messages: ChatMessage[],
@@ -107,26 +96,5 @@ export async function callLLMNode(
     case 'anthropic': return callAnthropic(messages, systemPrompt, api);
     case 'gemini':    return callGemini(messages, systemPrompt, api);
     default: throw new Error(`Unknown provider: ${api.provider}`);
-  }
-}
-
-export async function callAI(
-  messages: ChatMessage[],
-  passageContent: string,
-  summary: string,
-  prompts: Prompts,
-  api: APISettings,
-): Promise<string> {
-  const systemPrompt = buildSystemPrompt(prompts, passageContent, summary);
-
-  switch (api.provider) {
-    case 'openai':
-      return callOpenAI(messages, systemPrompt, api);
-    case 'anthropic':
-      return callAnthropic(messages, systemPrompt, api);
-    case 'gemini':
-      return callGemini(messages, systemPrompt, api);
-    default:
-      throw new Error(`Unknown provider: ${api.provider}`);
   }
 }

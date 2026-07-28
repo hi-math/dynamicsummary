@@ -1,6 +1,7 @@
 'use client';
 
 import { PHASE_LABEL } from '@/lib/phases';
+import { orderedAssessment } from '@/lib/da-state';
 import type { User, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
 export type StudentRecord = {
@@ -36,30 +37,21 @@ function exportCSV(record: StudentRecord) {
   }
   rows.push([]);
 
-  // Assessor 가 세운 지도 계획 — 어떤 항목을 왜 골랐고, 탭별 학습 단위와 그 근거가 무엇인지.
-  const plans = daStates.filter((d) => d.assessor_output?.mediation_targets?.length);
+  // Assessor 가 세운 지도 계획 — 어떤 항목을 왜 골랐고, 무엇을 어떤 순서로 다루는지.
+  // 구 기록(mediation_targets)은 orderedAssessment 가 새 형태로 변환해 함께 내보낸다.
+  const plans = daStates
+    .map((d) => ({ phase: d.phase, assessment: orderedAssessment(d.assessor_output) }))
+    .filter((p) => p.assessment.length > 0);
   if (plans.length > 0) {
     rows.push(['[진단 및 지도 계획]']);
-    rows.push(['단계', 'Tab', '항목', '선택 근거', '단위구분', 'descriptor', '심각도',
-      'feedback focus', '근거 위치', '근거 문장', '참조 내용', '근거 설명',
-      '문제인식(PI) 목표', '문제해결설명(PSV) 목표']);
-    for (const d of plans) {
-      const phaseLabel = PHASE_LABEL[d.phase as keyof typeof PHASE_LABEL] ?? d.phase;
-      const items = d.assessor_output?.items ?? {};
-      const targets = [...(d.assessor_output?.mediation_targets ?? [])].sort((a, b) => a.tab - b.tab);
-      for (const t of targets) {
-        // 근거는 unit 안에 없다 — 같은 항목의 detected_descriptors 에서 descriptor_key 로 찾는다.
-        const unitRow = (u: typeof t.primary_mediation_unit, label: string, rationale: string) => {
-          const dd = items[t.item]?.detected_descriptors?.find((x) => x.key === u.descriptor_key);
-          const ev = dd?.evidence;
-          rows.push([phaseLabel, String(t.tab), t.item, rationale, label,
-            u.descriptor_key, dd?.severity ?? '', u.feedback_focus,
-            ev?.problem_location ?? '', ev?.student_text ?? '', ev?.reference_content ?? '', ev?.explanation ?? '',
-            u.mediation_goal?.problem_identification ?? '',
-            u.mediation_goal?.problem_solution_verbalization ?? '']);
-        };
-        unitRow(t.primary_mediation_unit, '주 단위', t.priority_rationale ?? '');
-        if (t.secondary_mediation_unit) unitRow(t.secondary_mediation_unit, '보조 단위', '');
+    rows.push(['단계', '항목', '중재 필요성 순위', '제시 순서', '문제 내용', '학생 글 근거',
+      '선정 근거', '중재 초점', '문제인식(PI) 목표', '문제해결설명(PSV) 목표']);
+    for (const p of plans) {
+      const phaseLabel = PHASE_LABEL[p.phase as keyof typeof PHASE_LABEL] ?? p.phase;
+      for (const t of p.assessment) {
+        rows.push([phaseLabel, t.item, String(t.problem_priority), String(t.presentation_order),
+          t.problem_description, t.student_text_evidence.join('\n'), t.selection_rationale,
+          t.mediation_focus, t.PI_goal, t.PSV_goal]);
       }
     }
     rows.push([]);

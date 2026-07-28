@@ -11,7 +11,7 @@ import TrashTab from './tabs/TrashTab';
 import { type StudentRecord } from './tabs/StudentDataCard';
 import { setDataTrashed } from '@/actions/admin';
 import { ToastProvider, useToast } from '@/components/ui/Toast';
-import type { APISettings, Prompts, User, SessionCookie } from '@/types';
+import type { APISettings, User, SessionCookie } from '@/types';
 import type { Passage } from '@/types';
 
 type Tab = 'users' | 'api' | 'prompts' | 'passages' | 'data' | 'trash';
@@ -29,7 +29,6 @@ export default function AdminClient({
   session,
   initialUsers,
   initialAPI,
-  initialPrompts,
   initialPassages,
   initialStudentsData,
   initialMentors,
@@ -39,7 +38,6 @@ export default function AdminClient({
   session: SessionCookie;
   initialUsers: User[];
   initialAPI: APISettings | null;
-  initialPrompts: Prompts | null;
   initialPassages: Passage[];
   initialStudentsData: unknown[];
   initialMentors: User[];
@@ -52,7 +50,6 @@ export default function AdminClient({
         session={session}
         initialUsers={initialUsers}
         initialAPI={initialAPI}
-        initialPrompts={initialPrompts}
         initialPassages={initialPassages}
         initialStudentsData={initialStudentsData}
         initialMentors={initialMentors}
@@ -67,7 +64,6 @@ function AdminContent({
   session,
   initialUsers,
   initialAPI,
-  initialPrompts,
   initialPassages,
   initialStudentsData,
   initialMentors,
@@ -77,7 +73,6 @@ function AdminContent({
   session: SessionCookie;
   initialUsers: User[];
   initialAPI: APISettings | null;
-  initialPrompts: Prompts | null;
   initialPassages: Passage[];
   initialStudentsData: unknown[];
   initialMentors: User[];
@@ -140,7 +135,7 @@ function AdminContent({
         <main className="flex-1 overflow-y-auto p-6">
           {tab === 'users' && <UsersTab initialUsers={initialUsers} initialMentors={initialMentors} />}
           {tab === 'api' && <APITab initialAPI={initialAPI} />}
-          {tab === 'prompts' && <PromptsTab initialPrompts={initialPrompts} initialAssets={initialPromptAssets} />}
+          {tab === 'prompts' && <PromptsTab initialAssets={initialPromptAssets} />}
           {tab === 'passages' && <PassagesTab initialPassages={initialPassages} initialComprehensionQs={initialComprehensionQs as never} initialPromptAssets={initialPromptAssets} />}
           {tab === 'data' && <DataTab records={activeRecords} busyId={busyId} onTrash={handleSetTrashed} />}
           {tab === 'trash' && <TrashTab records={trashedRecords} busyId={busyId} onRestore={handleSetTrashed} />}

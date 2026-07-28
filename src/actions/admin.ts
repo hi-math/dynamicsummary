@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createServerClient } from '@/lib/supabase-server';
-import type { APISettings, Prompts, User } from '@/types';
+import type { APISettings, User } from '@/types';
 import type { Phase } from '@/lib/phases';
 import { nextPhase, PHASES, isValidPhase } from '@/lib/phases';
 
@@ -183,26 +183,8 @@ export async function saveAPISettings(formData: FormData) {
   return { success: true };
 }
 
-// ─── Prompts ──────────────────────────────────────────────────────────────────
-
-export async function getPrompts(): Promise<Prompts | null> {
-  const supabase = createServerClient();
-  const { data } = await supabase.from('prompts').select('*').eq('id', 1).single();
-  return data as Prompts | null;
-}
-
-export async function savePrompts(formData: FormData) {
-  const supabase = createServerClient();
-  const { error } = await supabase.from('prompts').upsert({
-    id: 1,
-    system_prompt: formData.get('system_prompt') ?? '',
-    da_prompt: formData.get('da_prompt') ?? '',
-    updated_at: new Date().toISOString(),
-  });
-  if (error) return { error: error.message };
-  revalidatePath('/admin');
-  return { success: true };
-}
+// 구 `prompts` 테이블(system_prompt / da_prompt)은 현재 DA 파이프라인이 쓰지 않는다.
+// 프롬프트는 모두 prompt_assets 로 관리된다 (아래 getPromptAssets / savePromptAsset).
 
 // ─── Passages ─────────────────────────────────────────────────────────────────
 

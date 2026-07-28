@@ -81,9 +81,10 @@ function PassageCard({ cycleKey, label, initial }: { cycleKey: string; label: st
 }
 
 // ─── Knowledge prompt card (과제별 지식자료) ───────────────────────────────────
-// 이 과제(cycle)의 지문을 설명하는 참고자료. loadPromptAssets(student.ts)가 현재 phase의
-// knowledge_<cycle> 을 knowledge_active 로 골라, 과제평가(Assessor)의 user 입력에
-// [PASSAGE KNOWLEDGE] 블록으로 넣는다. DA 채팅(Mediator)에서는 쓰지 않는다.
+// 이 과제(cycle)의 지문을 설명하는 참고자료 — 모범 요약문·IU 표·중요도·연구자 노트.
+// loadPromptAssets(student.ts)가 현재 phase의 knowledge_<cycle> 을 knowledge_active 로
+// 골라, 과제평가(Assessor)의 user 입력에 [CYCLE KNOWLEDGE RESOURCE] 블록으로 넣는다.
+// ⚠ 현재는 DA 채팅(Mediator)의 중재 턴에도 함께 전달된다 (오프닝은 제외). 정리 예정.
 
 function KnowledgePromptCard({ cycleKey, label, initialValue }: { cycleKey: string; label: string; initialValue: string }) {
   const { showToast } = useToast();
