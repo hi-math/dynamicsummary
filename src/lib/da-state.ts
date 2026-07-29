@@ -22,6 +22,35 @@ export const MAX_STEP = 5;
 // confusion/off_topic 이 연속 이만큼 나오면 재설명을 반복하지 않고 단계를 +1 해서 탈출한다.
 export const OFF_TRACK_ESCALATE_AT = 2;
 export const MAX_TABS = 3;              // 학생 화면의 탭 상한
+// 동적평가(스테이지 3) 진입 후 이 시간이 지나면 남은 탭이 있어도 종료 시나리오로 간다.
+export const SESSION_TIME_LIMIT_MIN = 27;
+
+/** 스테이지 3 진입 후 제한 시간이 지났는가. 기준 시각이 없으면 시계가 돌지 않는다. */
+export function isPastTimeLimit(state: DASessionState, now: number = Date.now()): boolean {
+  const startedAt = state.stage_started_at;
+  if (!startedAt) return false;
+  const started = Date.parse(startedAt);
+  if (Number.isNaN(started)) return false;
+  return now - started >= SESSION_TIME_LIMIT_MIN * 60_000;
+}
+
+/**
+ * 남은 탭을 모두 접고 세션을 종료 상태로 만든다 (시간 제한 전용).
+ *
+ * 학생 화면의 '사이클 종료' 버튼은 priority_queue 의 모든 항목이 resolutions 에
+ * 있어야 열리므로, 다루지 못한 탭도 여기서 함께 해제한다.
+ */
+export function closeAllRemaining(state: DASessionState): DASessionState {
+  const resolutions = { ...state.resolutions };
+  for (const item of state.priority_queue) resolutions[item] = true;
+  return {
+    ...state,
+    resolutions,
+    awaiting_confirmation: false,
+    closing_phase: true,
+    session_complete: true,
+  };
+}
 
 const RANK: Record<GoalStatus, number> = { absent: 0, partial: 1, sufficient: 2 };
 

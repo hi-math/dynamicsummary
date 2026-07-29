@@ -183,6 +183,23 @@ async function saveDASessionState(
   }, { onConflict: 'student_id,phase' });
 }
 
+/**
+ * 동적평가(스테이지 3) 진입 시각을 한 번만 찍고 상태를 돌려준다.
+ *
+ * Assessor 는 이해도검사 단계에서 미리 돌 수 있으므로 session_started_at 은
+ * 학생이 화면에 들어온 시각이 아니다. 27분 제한의 기준점은 이 값이다.
+ */
+export async function getDASessionStateOnEntry(
+  studentId: string,
+  phase: string,
+): Promise<DASessionState | null> {
+  const state = await getDASessionState(studentId, phase);
+  if (!state || state.stage_started_at) return state;
+  const stamped: DASessionState = { ...state, stage_started_at: new Date().toISOString() };
+  await saveDASessionState(createServerClient(), studentId, phase, stamped);
+  return stamped;
+}
+
 // Starts the DA session: runs Assessor → Priority selection → Opening message
 export async function startDASession(
   studentId: string,
@@ -278,12 +295,17 @@ export async function sendDAMessage(
       off_track_streak: 0, node: 'mediation', utterance: '',
       used_target: null, used_step: null, reconcile_mismatch: error,
       confirm_decision: null, confirm_rationale: null,
-      unit_closed: false, next_item: null, session_complete: false,
+      unit_closed: false, next_item: null, session_complete: false, time_limit_closed: false,
       llm_calls: 0, latency_ms: 0,
     },
   });
   if (!apiRes.data) return fail('API 설정이 없습니다.');
   if (!currentState) return fail('DA 세션이 초기화되지 않았습니다.');
+
+  // 진입 스탬프가 없는 세션(구 기록·직접 진입)은 첫 발화 시각을 기준점으로 삼는다.
+  const state: DASessionState = currentState.stage_started_at
+    ? currentState
+    : { ...currentState, stage_started_at: new Date().toISOString() };
 
   // 현재 활성 유닛이 속한 탭의 대화만 넘긴다 (다른 탭의 대화는 섞이지 않는다).
   const itemIdx = currentState.current_item_idx;
@@ -297,7 +319,7 @@ export async function sendDAMessage(
 
   try {
     const result = await processTurn(
-      currentState,
+      state,
       studentMessage,
       latestTutorUtterance,
       history,

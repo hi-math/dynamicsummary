@@ -20,8 +20,9 @@ import type {
 } from '@/types';
 import { descriptorBlockAll, itemsFrom } from './descriptors';
 import {
-  MAX_TABS, advanceTo, applyClassification, applyGoalVerdict, closeUnit,
-  isTerminalStep, newUnit, nextDestination, orderedAssessment, reconcileWithUtterance,
+  MAX_TABS, advanceTo, applyClassification, applyGoalVerdict, closeAllRemaining, closeUnit,
+  isPastTimeLimit, isTerminalStep, newUnit, nextDestination, orderedAssessment,
+  reconcileWithUtterance,
 } from './da-state';
 import {
   runAnalysis, runClosing, runConfirmInvite, runConfirmation, runMediation, runOpening,
@@ -184,6 +185,7 @@ export function createInitialState(): DASessionState {
     current_item_idx: 0,
     active_unit: newUnit(1, ''),
     session_started_at: null,
+    stage_started_at: null,
     closing_phase: false,
     awaiting_confirmation: false,
     completed_units: [],
@@ -331,6 +333,7 @@ function buildLog(
     unitClosed: boolean;
     nextItem: string | null;
     sessionComplete?: boolean;
+    timeLimitClosed?: boolean;
   },
 ): TurnResult['log'] {
   const b = before.active_unit;
@@ -364,6 +367,7 @@ function buildLog(
     unit_closed: args.unitClosed,
     next_item: args.nextItem,
     session_complete: args.sessionComplete ?? after.closing_phase,
+    time_limit_closed: args.timeLimitClosed ?? false,
     llm_calls: d.llmCalls,
     latency_ms: Date.now() - d.startedAt,
   };
@@ -382,29 +386,40 @@ async function closeAndAdvance(
   prompts: Record<string, string>,
   api: APISettings,
   d: LogDraft,
-): Promise<{ state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean }> {
-  const closed = state.active_unit;
+): Promise<{
+  state: DASessionState; sameTabText: string; nextOpening?: string;
+  tabUnlocked: boolean; timeLimitClosed: boolean;
+}> {
   let next = closeUnit(state, outcome, principle);
-  const dest = nextDestination(next);
+
+  // 시간 제한 — 스테이지 3 진입 후 27분이 지나면 남은 탭이 있어도 새 탭을 열지 않는다.
+  // 진행 중이던 유닛은 평소대로 끝까지 간다. 여기서만 걸린다.
+  const timeLimitClosed = isPastTimeLimit(next) && nextDestination(next).kind === 'next_tab';
+  const dest = timeLimitClosed ? ({ kind: 'closing' } as const) : nextDestination(next);
   next = advanceTo(next, dest);
+  // 다루지 못한 탭도 해제해 둔다 — '사이클 종료' 버튼이 모든 탭의 해제를 요구한다.
+  if (timeLimitClosed) next = closeAllRemaining(next);
 
   if (dest.kind === 'closing') {
     d.llmCalls++;
     const utterance = await mediate(next, 'session_closing', [], undefined, turnCtx, prompts, api);
-    return { state: next, sameTabText: utterance, tabUnlocked: false };
+    return { state: next, sameTabText: utterance, tabUnlocked: false, timeLimitClosed };
   }
   d.llmCalls++;
   const utterance = await mediate(next, 'opening', [], undefined, turnCtx, prompts, api);
   if (dest.kind === 'next_tab') {
-    return { state: next, sameTabText: '', nextOpening: utterance, tabUnlocked: true };
+    return { state: next, sameTabText: '', nextOpening: utterance, tabUnlocked: true, timeLimitClosed };
   }
   // 보조 유닛 — 같은 탭에서 이어진다.
-  return { state: next, sameTabText: utterance, tabUnlocked: false };
+  return { state: next, sameTabText: utterance, tabUnlocked: false, timeLimitClosed };
 }
 
 /** closeAndAdvance 결과를 TurnResult 로 합친다. */
 function toResult(
-  adv: { state: DASessionState; sameTabText: string; nextOpening?: string; tabUnlocked: boolean },
+  adv: {
+    state: DASessionState; sameTabText: string; nextOpening?: string;
+    tabUnlocked: boolean; timeLimitClosed: boolean;
+  },
   leadingText: string,
   classification: TurnResult['classification'],
   before: DASessionState,
@@ -435,6 +450,7 @@ function toResult(
       unitClosed: true,
       nextItem: nextItem && nextItem !== before.active_unit.item ? nextItem : null,
       sessionComplete: adv.state.closing_phase,
+      timeLimitClosed: adv.timeLimitClosed,
     }),
   };
 }

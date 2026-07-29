@@ -45,6 +45,7 @@ const TURN_LOG_COLUMNS: [string, (t: TurnLog & { created_at?: string }) => unkno
   ['유닛 종료',       (t) => (t.unit_closed ? 'Y' : '')],
   ['다음 항목',       (t) => t.next_item],
   ['세션 종료',       (t) => (t.session_complete ? 'Y' : '')],
+  ['시간 제한 종료',  (t) => (t.time_limit_closed ? 'Y' : '')],
   ['LLM 호출수',      (t) => t.llm_calls],
   ['소요(ms)',        (t) => t.latency_ms],
 ];

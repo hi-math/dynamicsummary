@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { getSession } from '@/lib/auth';
 import {
   getSessionData, getAIMessages, getPassage, getCurrentUser,
-  getComprehensionQuestions, getDASessionState,
+  getComprehensionQuestions, getDASessionStateOnEntry,
 } from '@/actions/student';
 import { getHumanMessages, getMentorById } from '@/actions/mentor';
 import { cycleKeyFromPhase, isComprehensionPhase } from '@/lib/phases';
@@ -50,7 +50,7 @@ export default async function StudentPage() {
 
   // DA session state (only needed on da phase)
   const daSessionState = phase.endsWith('_da')
-    ? await getDASessionState(session.id, phase)
+    ? await getDASessionStateOnEntry(session.id, phase)
     : null;
 
   // For human team students in DA phase: fetch mentor info

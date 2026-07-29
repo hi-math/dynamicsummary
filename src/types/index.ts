@@ -190,7 +190,9 @@ export type ResponseContext =
   | 'post_confirmation_help'  // prompt_post_confirm
   | 'session_closing';        // prompt_closing
 
-export type UnitOutcome = 'completed_by_learner' | 'completed_with_explicit_step5';
+export type UnitOutcome =
+  | 'completed_by_learner'
+  | 'completed_with_explicit_step5';
 
 // 완료된 유닛의 압축 요약. 중재 발화 턴에는 원문 대화가 아니라 이것만 넘긴다.
 export type CompletedUnitSummary = {
@@ -266,6 +268,8 @@ export type TurnLog = {
   unit_closed: boolean;
   next_item: string | null;      // 탭이 넘어갔으면 다음 항목
   session_complete: boolean;
+  // 27분 제한 때문에 다음 탭 대신 종료로 갔는가 (유닛 자체는 정상적으로 끝났다)
+  time_limit_closed: boolean;
 
   // 계측
   llm_calls: number;
@@ -292,7 +296,10 @@ export type DASessionState = {
   active_unit: ActiveUnit;
 
   // 세션 수준
-  session_started_at: string | null;         // ISO. 세션 시작 시각 (기록용)
+  session_started_at: string | null;         // ISO. Assessor 가 돌아 상태가 만들어진 시각
+  // ISO. 학생이 동적평가(스테이지 3) 화면에 들어온 시각. 27분 제한의 기준점이다.
+  // Assessor 는 이해도검사 단계에서 미리 돌 수 있으므로 session_started_at 과 다르다.
+  stage_started_at?: string | null;
   closing_phase: boolean;                    // 종료 단계 진입 여부
 
   awaiting_confirmation: boolean;            // 전환 확인 질문을 던진 상태

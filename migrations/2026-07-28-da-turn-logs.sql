@@ -52,6 +52,7 @@ create table if not exists public.da_turn_logs (
   unit_closed      boolean not null default false,
   next_item        text,
   session_complete boolean not null default false,
+  time_limit_closed boolean not null default false,   -- 27분 제한으로 다음 탭 대신 종료로 갔는가
 
   -- 계측
   llm_calls   integer not null default 0,
