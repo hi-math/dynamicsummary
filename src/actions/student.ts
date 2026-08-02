@@ -303,8 +303,12 @@ export async function sendDAMessage(
     loadPromptAssets(supabase, phase),
     getDASessionState(studentId, phase),
     // Analysis 가 학생 요약문 전체를 참고자료로 받는다 (근거 인용의 문맥 확인용).
-    supabase.from('session_data').select('summary')
-      .eq('student_id', studentId).eq('phase', phase).maybeSingle(),
+    // 진단 대상은 **드래프트 행이 정본**이다 — DA 화면의 요약문 패널은 편집 가능해서
+    // 세션 중 phase 행이 바뀌는데, 그러면 Assessor 가 인용한 근거 문장이 사라져
+    // 모델이 "그 부분은 이미 정리되었다"는 식으로 어긋난 판단을 하게 된다.
+    supabase.from('session_data').select('phase, summary')
+      .eq('student_id', studentId)
+      .in('phase', [`${cycleKeyFromPhase(phase)}_draft`, phase]),
   ]);
 
   const fail = (error: string, state?: DASessionState): TurnResult & { error: string } => ({
@@ -331,6 +335,12 @@ export async function sendDAMessage(
     ? currentState
     : { ...currentState, stage_started_at: new Date().toISOString() };
 
+  // 진단 대상 요약문 — 드래프트 행이 없을 때만 현재 phase 행으로 물러난다.
+  const summaryRows = (summaryRes.data ?? []) as { phase: string; summary: string | null }[];
+  const summaryOf = (p: string) => summaryRows.find((r) => r.phase === p)?.summary?.trim() ?? '';
+  const assessedSummary =
+    summaryOf(`${cycleKeyFromPhase(phase)}_draft`) || summaryOf(phase);
+
   // 현재 활성 유닛이 속한 탭의 대화만 넘긴다 (다른 탭의 대화는 섞이지 않는다).
   const itemIdx = currentState.current_item_idx;
   const rows = await loadTabHistory(supabase, studentId, phase, itemIdx);
@@ -349,7 +359,7 @@ export async function sendDAMessage(
       history,
       {
         sourceText: passageContent,
-        studentSummary: (summaryRes.data?.summary as string | null) ?? '',
+        studentSummary: assessedSummary,
         cycleKnowledge: prompts['knowledge_active'] ?? '',
       },
       prompts,
@@ -357,19 +367,34 @@ export async function sendDAMessage(
     );
 
     await saveDASessionState(supabase, studentId, phase, result.updated_state);
-    // 발화는 "그 발화가 속한 탭"에 기록한다 — 탭이 넘어갔으면 새 탭에 붙는다.
-    // 종료 발화는 앞 발화와 합치지 않고 별도 행으로 남긴다 (학생 화면에서도 별도 말풍선).
+
+    // 발화는 **그 발화가 실제로 일어난 탭**에 기록한다.
+    //   utterance       이 턴이 시작된 탭. 탭이 넘어간 턴이라도 마지막 발화(⑥ Provision 등)는
+    //                   방금 닫힌 앞 탭의 것이다. 이것을 새 탭에 붙이면 다음 턴의
+    //                   previous_tutor_utterance 가 앞 탭 발화가 되어, 학생의 새 탭 답변을
+    //                   앞 탭 맥락으로 판정하게 된다.
+    //   next_opening    새로 열린 탭의 첫 발화. 저장하지 않으면 새로고침 시 화면에서 사라지고,
+    //                   서버도 그 탭의 직전 발화를 잃는다.
+    //   closing_message 세션 종료 발화 — 마지막 탭에 남는다.
+    // created_at 은 밀리초 간격으로 직접 찍는다. NOW() 는 트랜잭션 시각이라 한 번의 insert
+    // 안에서 모두 같아지고, 같은 탭의 행들이 기록 순서를 잃는다.
     const outIdx = result.updated_state.current_item_idx;
-    const rows = [
-      { student_id: studentId, phase, role: 'user', content: studentMessage, item_idx: itemIdx },
+    const t0 = Date.now();
+    const at = (offset: number) => new Date(t0 + offset).toISOString();
+    const base = { student_id: studentId, phase };
+    const msgRows = [
+      { ...base, role: 'user', content: studentMessage, item_idx: itemIdx, created_at: at(0) },
       ...(result.utterance
-        ? [{ student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: outIdx }]
+        ? [{ ...base, role: 'assistant', content: result.utterance, item_idx: itemIdx, created_at: at(1) }]
+        : []),
+      ...(result.next_opening
+        ? [{ ...base, role: 'assistant', content: result.next_opening, item_idx: outIdx, created_at: at(2) }]
         : []),
       ...(result.closing_message
-        ? [{ student_id: studentId, phase, role: 'assistant', content: result.closing_message, item_idx: outIdx }]
+        ? [{ ...base, role: 'assistant', content: result.closing_message, item_idx: outIdx, created_at: at(3) }]
         : []),
     ];
-    await supabase.from('ai_messages').insert(rows);
+    await supabase.from('ai_messages').insert(msgRows);
 
     // 턴 로그 — 연구 데이터의 원장. 채팅 저장을 막지 않도록 실패해도 넘어간다.
     const { count } = await supabase
