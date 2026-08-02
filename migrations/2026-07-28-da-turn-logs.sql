@@ -63,3 +63,8 @@ create table if not exists public.da_turn_logs (
 
 create index if not exists da_turn_logs_student_phase_idx
   on public.da_turn_logs (student_id, phase, turn_index);
+
+-- 이미 이 테이블을 만든 뒤에 추가된 열. 신규 생성이면 위 create 문에 이미 포함되어 있고,
+-- 기존 테이블이면 이 문장이 채워 준다 (둘 다 안전하게 여러 번 실행 가능).
+alter table public.da_turn_logs
+  add column if not exists time_limit_closed boolean not null default false;

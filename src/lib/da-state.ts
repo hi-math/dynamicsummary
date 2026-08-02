@@ -251,11 +251,16 @@ export function nextDestination(state: DASessionState): NextDestination {
   return { kind: 'closing' };
 }
 
-/** 유닛을 닫고 요약을 남긴다. */
+/**
+ * 유닛을 닫고 요약을 남긴다.
+ *
+ * principle_discussed 는 **한 줄 원리**여야 한다. 예전에는 직전 발화 전문(수백~천 자)을
+ * 넣었는데, 그러면 ⑩ Closing 이 그 발화를 다시 요약하게 되어 같은 설명이 두 번 나갔다.
+ * Assessor 가 이미 한 문장으로 준 PSV_goal(없으면 mediation_focus)을 쓴다.
+ */
 export function closeUnit(
   state: DASessionState,
   outcome: UnitOutcome,
-  principleDiscussed: string,
 ): DASessionState {
   const u = state.active_unit;
   const unit = unitOf(state.assessor_output, u.item);
@@ -265,7 +270,8 @@ export function closeUnit(
     mediation_focus: unit?.mediation_focus ?? '',
     pi_status: u.cumulative_pi,
     psv_status: u.cumulative_psv,
-    principle_discussed: principleDiscussed,
+    outcome,
+    principle_discussed: unit?.PSV_goal?.trim() || unit?.mediation_focus?.trim() || '',
     strategy_or_tool_used: [],
     learner_question_note: null,
   };

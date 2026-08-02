@@ -249,7 +249,13 @@ async function mediate(
   const unit = state.active_unit;
 
   if (ctx === 'opening') {
-    return runOpening(unit, state.priority_queue.length, prompts, api);
+    // 분량 안내는 첫 탭의 첫 오프닝에만 붙는다 — 같은 탭의 보조 유닛 오프닝에서는
+    // 요약문을 넘기지 않으므로 되풀이되지 않는다.
+    const firstOpening = unit.tab === 1 && state.completed_units.length === 0;
+    return runOpening(
+      unit, state.priority_queue.length, prompts, api,
+      firstOpening ? turnCtx.studentSummary : undefined,
+    );
   }
   if (ctx === 'confusion_rephrase' || ctx === 'off_topic_redirect') {
     return runRecovery(
@@ -288,6 +294,7 @@ async function mediate(
 export type TurnResult = {
   utterance: string;          // 현재 탭에 표시할 발화
   next_opening?: string;      // 다음 탭이 열렸을 때 그 탭에 표시할 첫 발화
+  closing_message?: string;   // 세션 종료 발화. 앞 발화와 합치지 않고 별도 말풍선으로 띄운다
   updated_state: DASessionState;
   classification: 'on_track' | 'confusion' | 'off_topic' | 'confirmation' | 'closing';
   tab_unlocked: boolean;
@@ -375,22 +382,22 @@ function buildLog(
 
 /**
  * 유닛을 닫고 다음 행선지로 이동시킨 뒤 그곳의 첫 발화를 만든다.
- * 다음 탭으로 넘어간 경우에만 발화를 nextOpening 으로 분리한다 —
- * 보조 유닛과 종료 안내는 같은 탭에 이어서 표시되기 때문이다.
+ *
+ * 다음 탭의 오프닝은 nextOpening, 세션 종료 발화는 closingMessage 로 **분리해서** 돌려준다.
+ * 같은 턴의 앞 발화(⑥ Provision 등)와 한 말풍선에 합치면 학생이 보는 글이 두 배로 길어진다.
  */
 async function closeAndAdvance(
   state: DASessionState,
   outcome: UnitOutcome,
-  principle: string,
   turnCtx: TurnContext,
   prompts: Record<string, string>,
   api: APISettings,
   d: LogDraft,
 ): Promise<{
-  state: DASessionState; sameTabText: string; nextOpening?: string;
+  state: DASessionState; sameTabText: string; nextOpening?: string; closingMessage?: string;
   tabUnlocked: boolean; timeLimitClosed: boolean;
 }> {
-  let next = closeUnit(state, outcome, principle);
+  let next = closeUnit(state, outcome);
 
   // 시간 제한 — 스테이지 3 진입 후 27분이 지나면 남은 탭이 있어도 새 탭을 열지 않는다.
   // 진행 중이던 유닛은 평소대로 끝까지 간다. 여기서만 걸린다.
@@ -403,7 +410,7 @@ async function closeAndAdvance(
   if (dest.kind === 'closing') {
     d.llmCalls++;
     const utterance = await mediate(next, 'session_closing', [], undefined, turnCtx, prompts, api);
-    return { state: next, sameTabText: utterance, tabUnlocked: false, timeLimitClosed };
+    return { state: next, sameTabText: '', closingMessage: utterance, tabUnlocked: false, timeLimitClosed };
   }
   d.llmCalls++;
   const utterance = await mediate(next, 'opening', [], undefined, turnCtx, prompts, api);
@@ -417,7 +424,7 @@ async function closeAndAdvance(
 /** closeAndAdvance 결과를 TurnResult 로 합친다. */
 function toResult(
   adv: {
-    state: DASessionState; sameTabText: string; nextOpening?: string;
+    state: DASessionState; sameTabText: string; nextOpening?: string; closingMessage?: string;
     tabUnlocked: boolean; timeLimitClosed: boolean;
   },
   leadingText: string,
@@ -439,14 +446,15 @@ function toResult(
   return {
     utterance,
     next_opening: adv.nextOpening,
+    closing_message: adv.closingMessage,
     updated_state: adv.state,
     classification,
     tab_unlocked: adv.tabUnlocked,
     session_complete: adv.state.closing_phase,
     log: buildLog(before, atClose, d, {
       ...logArgs,
-      // 발화 전문은 다음 탭 오프닝까지 포함해 남긴다 (학생이 이 턴에 본 전부).
-      utterance: [utterance, adv.nextOpening].filter(Boolean).join('\n\n'),
+      // 발화 전문은 다음 탭 오프닝·종료 발화까지 포함해 남긴다 (학생이 이 턴에 본 전부).
+      utterance: [utterance, adv.nextOpening, adv.closingMessage].filter(Boolean).join('\n\n'),
       unitClosed: true,
       nextItem: nextItem && nextItem !== before.active_unit.item ? nextItem : null,
       sessionComplete: adv.state.closing_phase,
@@ -511,12 +519,12 @@ export async function processTurn(
       // 직접 설명 1회 → 그 뒤 유닛을 닫고 통상 라우팅. Confirmation 을 반복하지 않는다.
       d.llmCalls++;
       const help = await mediate(s, 'post_confirmation_help', history, learnerMessage, turnCtx, prompts, api);
-      const adv = await closeAndAdvance(s, 'completed_by_learner', help, turnCtx, prompts, api, d);
+      const adv = await closeAndAdvance(s, 'completed_by_learner', turnCtx, prompts, api, d);
       return toResult(adv, help, 'confirmation', state, s, d, { ...logBase, node: 'post_confirm' });
     }
 
     // move_on
-    const adv = await closeAndAdvance(s, 'completed_by_learner', '', turnCtx, prompts, api, d);
+    const adv = await closeAndAdvance(s, 'completed_by_learner', turnCtx, prompts, api, d);
     return toResult(adv, '', 'confirmation', state, s, d, { ...logBase, node: 'unit_closed' });
   }
 
@@ -585,7 +593,7 @@ export async function processTurn(
     const utterance = await mediate(
       s, 'on_track_continue', history, learnerMessage, turnCtx, prompts, api,
     );
-    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', utterance, turnCtx, prompts, api, d);
+    const adv = await closeAndAdvance(s, 'completed_with_explicit_step5', turnCtx, prompts, api, d);
     return toResult(adv, utterance, analysis.classification, state, s, d, { ...logBase, node: 'provision' });
   }
 

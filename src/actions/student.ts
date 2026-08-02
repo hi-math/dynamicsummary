@@ -44,8 +44,21 @@ export async function saveSummary(studentId: string, phase: string, summary: str
 
 // ─── Draft submit ─────────────────────────────────────────────────────────────
 
+/**
+ * 제출은 **학생의 현재 단계에만** 허용한다.
+ *
+ * 관리자가 단계를 바꾼 뒤에도 학생 화면이 옛 단계를 붙잡고 있을 수 있다. 그대로 두면
+ * 새 사이클의 글이 이전 사이클 행에 덮어써지거나(원본 손실), 반대로 이전 사이클의 글이
+ * 새 사이클 행에 들어가 다음 평가가 엉뚱한 글로 실행된다. 어긋나면 저장하지 않고
+ * 새로고침을 요구한다.
+ */
 export async function submitDraft(studentId: string, phase: string, summary: string) {
   const supabase = createServerClient();
+  const { data: user } = await supabase
+    .from('users').select('current_phase').eq('id', studentId).single();
+  if (user && user.current_phase !== phase) {
+    return { error: '단계가 변경되었습니다. 화면을 새로고침한 뒤 다시 제출해주세요.' };
+  }
   const { error } = await supabase.from('session_data').upsert(
     {
       student_id: studentId,
@@ -216,6 +229,17 @@ export async function startDASession(
   const existing = await getDASessionState(studentId, phase);
   if (existing) return { state: existing };
 
+  // 평가 대상 글은 **서버가 DB 에서 직접 읽는다.** 클라이언트 상태는 관리자가 단계를 바꾼 뒤
+  // 이전 사이클의 요약문을 들고 있을 수 있고, 그대로 넘어오면 다음 사이클의 평가가
+  // 이전 사이클 제출물로 실행된다. DB 의 해당 사이클 draft 행이 정본이다.
+  const { data: draftRow } = await supabase
+    .from('session_data').select('summary')
+    .eq('student_id', studentId).eq('phase', `${cycleKeyFromPhase(phase)}_draft`).maybeSingle();
+  const assessedSummary = (draftRow?.summary as string | null)?.trim() || summary;
+  if (!assessedSummary?.trim()) {
+    return { state: createInitialState(), error: '평가할 요약문이 없습니다.' };
+  }
+
   const [apiRes, prompts] = await Promise.all([
     supabase.from('api_settings').select('*').eq('id', 1).single<APISettings>(),
     loadPromptAssets(supabase, phase),
@@ -226,7 +250,7 @@ export async function startDASession(
     // initDASession returns the opening utterance too, so no separate
     // generateOpeningMessage call is needed here.
     const { state, openingUtterance } = await initDASession(
-      summary, passageContent, prompts, apiRes.data
+      assessedSummary, passageContent, prompts, apiRes.data
     );
     await saveDASessionState(supabase, studentId, phase, state);
 
@@ -334,11 +358,18 @@ export async function sendDAMessage(
 
     await saveDASessionState(supabase, studentId, phase, result.updated_state);
     // 발화는 "그 발화가 속한 탭"에 기록한다 — 탭이 넘어갔으면 새 탭에 붙는다.
+    // 종료 발화는 앞 발화와 합치지 않고 별도 행으로 남긴다 (학생 화면에서도 별도 말풍선).
     const outIdx = result.updated_state.current_item_idx;
-    await supabase.from('ai_messages').insert([
+    const rows = [
       { student_id: studentId, phase, role: 'user', content: studentMessage, item_idx: itemIdx },
-      { student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: outIdx },
-    ]);
+      ...(result.utterance
+        ? [{ student_id: studentId, phase, role: 'assistant', content: result.utterance, item_idx: outIdx }]
+        : []),
+      ...(result.closing_message
+        ? [{ student_id: studentId, phase, role: 'assistant', content: result.closing_message, item_idx: outIdx }]
+        : []),
+    ];
+    await supabase.from('ai_messages').insert(rows);
 
     // 턴 로그 — 연구 데이터의 원장. 채팅 저장을 막지 않도록 실패해도 넘어간다.
     const { count } = await supabase

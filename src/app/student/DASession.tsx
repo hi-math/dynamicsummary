@@ -407,12 +407,18 @@ export default function DASession({
         [activeItemKey]: (prev[activeItemKey] ?? []).filter((m) => m.id !== tempId),
       }));
     } else {
+      // 종료 발화는 앞 발화와 합치지 않고 별도 말풍선으로 띄운다.
       setMessagesPerItem((prev) => ({
         ...prev,
         [activeItemKey]: [
           ...(prev[activeItemKey] ?? []).filter((m) => m.id !== tempId),
           { role: 'user', content: text, id: tempId },
-          { role: 'assistant', content: res.utterance, id: String(Date.now() + 1) },
+          ...(res.utterance
+            ? [{ role: 'assistant' as const, content: res.utterance, id: String(Date.now() + 1) }]
+            : []),
+          ...(res.closing_message
+            ? [{ role: 'assistant' as const, content: res.closing_message, id: String(Date.now() + 2) }]
+            : []),
         ],
       }));
 
@@ -426,7 +432,7 @@ export default function DASession({
         if (nextKey) {
           setMessagesPerItem((prev) => ({
             ...prev,
-            [nextKey]: [{ role: 'assistant', content: res.next_opening!, id: String(Date.now() + 2) }],
+            [nextKey]: [{ role: 'assistant', content: res.next_opening!, id: String(Date.now() + 3) }],
           }));
         }
         showToast(`과제 ${activeTabIdx + 1} 완료! 과제 ${activeTabIdx + 2} 탭을 클릭해 다음 과제로 이동하세요.`, 'success');

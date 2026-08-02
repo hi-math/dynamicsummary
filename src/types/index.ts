@@ -201,6 +201,10 @@ export type CompletedUnitSummary = {
   mediation_focus: string;
   pi_status: GoalStatus;
   psv_status: GoalStatus;
+  // 학생이 스스로 도달했는가, 아니면 5단계에서 직접 제공했는가.
+  // ⑩ Closing 이 "직접 제공한 내용을 스스로 이해한 것처럼 말하지 말라"는 규칙에 쓴다.
+  outcome: UnitOutcome;
+  // 한 줄 원리 (Assessor 의 PSV_goal). 발화 전문을 넣지 않는다 — Closing 이 재요약하게 된다.
   principle_discussed: string;
   strategy_or_tool_used: string[];
   learner_question_note: string | null;

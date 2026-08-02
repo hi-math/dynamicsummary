@@ -190,19 +190,67 @@ in the learner's writing, and do not begin step-by-step questioning.
 Briefly introduce what will be reviewed and end with one short question inviting the
 learner to look at that aspect together.`;
 
+// 과업이 요구하는 분량. 140 이상 200 미만이 기준 범위다.
+export const SUMMARY_WORD_MIN = 140;
+export const SUMMARY_WORD_MAX = 200;
+
+export function countSummaryWords(text: string): number {
+  return text.trim() ? text.trim().split(/\s+/).length : 0;
+}
+
+export type WordCountStatus = 'in_range' | 'too_short' | 'too_long';
+
+export function wordCountStatus(wc: number): WordCountStatus {
+  if (wc < SUMMARY_WORD_MIN) return 'too_short';
+  if (wc >= SUMMARY_WORD_MAX) return 'too_long';
+  return 'in_range';
+}
+
+// 첫 탭 오프닝에만 붙는 분량 안내. 기준 범위를 벗어났을 때만 사용한다.
+const WORD_COUNT_FALLBACK = `[분량 안내 — 이 지시는 첫 탭 오프닝에만 적용된다]
+기준 word count 는 140 이상 200 미만이고, 학생은 {word_count}단어로 작성하였다.
+오프닝 발화의 마지막에 아래 문장을 그대로 한 문장 덧붙인다. 다른 분량 언급은 하지 않는다.
+
+1. 기준보다 짧은 경우({status} == too_short):
+현재 요약문은 {word_count}단어로, 과업 기준인 140–200단어보다 짧아요. 오늘 확인할 내용을 반영해 수정할 때 분량 기준도 함께 맞춰 주세요.
+
+2. 기준보다 긴 경우({status} == too_long):
+현재 요약문은 {word_count}단어로, 과업 기준인 140–200단어보다 길어요. 수정할 때 핵심 의미를 유지하면서 분량 기준도 함께 맞춰 주세요.`;
+
+/**
+ * 분량 안내 절. 기준 범위 안이거나 요약문이 비어 있으면 null —
+ * 이 경우 오프닝 프롬프트에 분량 이야기가 아예 들어가지 않는다.
+ */
+function wordCountSection(prompts: Record<string, string>, wc: number): string | null {
+  const status = wordCountStatus(wc);
+  if (wc === 0 || status === 'in_range') return null;
+  const asset = prompts['prompt_word_count']?.trim() || WORD_COUNT_FALLBACK;
+  return asset
+    .replace(/\{word_count\}/g, String(wc))
+    .replace(/\{status\}/g, status);
+}
+
 export async function runOpening(
   unit: ActiveUnit,
   totalTabs: number,
   prompts: Record<string, string>,
   api: APISettings,
+  // 첫 탭에서만 넘어온다. 넘어온 경우에만 분량 안내를 붙인다.
+  studentSummary?: string,
 ): Promise<string> {
   const sysPrompt = prompts['prompt_opening']?.trim() || OPENING_FALLBACK;
+  const wc = studentSummary === undefined ? null : countSummaryWords(studentSummary);
+  const wcSection = wc === null ? null : wordCountSection(prompts, wc);
   const userInput = JSON.stringify({
     current_item: unit.item,
     current_tab: unit.tab,
     total_tabs: totalTabs,
+    ...(wcSection
+      ? { word_count: wc, word_count_status: wordCountStatus(wc as number) }
+      : {}),
   });
-  return await callLLMNode(utterancePrompt(prompts, sysPrompt), userInput, api);
+  const body = joinSections(sysPrompt, wcSection);
+  return await callLLMNode(utterancePrompt(prompts, body), userInput, api);
 }
 
 // ─── Recovery (confusion / off_topic) ────────────────────────────────────────

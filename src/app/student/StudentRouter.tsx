@@ -39,10 +39,15 @@ export default function StudentRouter({
   mentorId?: string;
   mentorName?: string;
 }) {
+  // key={phase} 는 필수다. 같은 종류의 화면끼리 단계가 바뀌면(cycle1_draft → cycle2_draft,
+  // cycle1_da → cycle2_da) React 가 같은 인스턴스를 재사용해 useState 초기값이 갱신되지 않는다.
+  // 그러면 2차 사이클 화면에 1차 사이클의 요약문·채팅·DA 상태가 남고, 그대로 제출하면
+  // 다음 사이클의 평가가 1차 제출물로 실행된다. 단계가 바뀌면 항상 새로 마운트한다.
   return (
     <ToastProvider>
       {isDraftPhase(phase) && (
         <DraftPhase
+          key={phase}
           session={session}
           phase={phase}
           passage={passage}
@@ -52,6 +57,7 @@ export default function StudentRouter({
       )}
       {isComprehensionPhase(phase) && (
         <ComprehensionPhase
+          key={phase}
           session={session}
           phase={phase}
           questions={comprehensionQuestions}
@@ -62,6 +68,7 @@ export default function StudentRouter({
       )}
       {isDAPhase(phase) && (
         <DASession
+          key={phase}
           session={session}
           phase={phase}
           passage={passage}
@@ -76,7 +83,7 @@ export default function StudentRouter({
         />
       )}
       {isDonePhase(phase) && (
-        <CycleCompletePhase session={session} phase={phase} />
+        <CycleCompletePhase key={phase} session={session} phase={phase} />
       )}
     </ToastProvider>
   );

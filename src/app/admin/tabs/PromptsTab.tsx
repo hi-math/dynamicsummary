@@ -27,15 +27,16 @@ const EVAL_PROMPTS: PromptDef[] = [
 // ── 3. 세션 턴 — 실행 순서대로. ⚖ = 판정(비노출), 💬 = 학생에게 보이는 발화 ──
 // 지식자료(knowledge)는 과제별로 다르므로 여기가 아니라 지문 관리 탭에서 편집한다.
 const CHAT_PROMPTS: PromptDef[] = [
-  { key: 'prompt_opening',           label: '② 💬 Opening',        desc: '탭 첫 발화 — 항목 키만 받는다 (진단·요약문·지문 미전달)' },
-  { key: 'prompt_analysis',          label: '③ ⚖ Analysis',        desc: '매 응답 분류(on_track·confusion·off_topic) + 활성 목표 PI/PSV 판정' },
-  { key: 'prompt_recovery',          label: '④ 💬 Recovery',       desc: 'confusion·off_topic 복구 — 직전 발화와 학생 응답만 받는다 (mode 로 분기)' },
-  { key: 'prompt_mediation',         label: '⑤ 💬 Mediation',      desc: '1~4단계 — 확정된 목표·단계에서 발화 (쓴 단계를 함께 신고)' },
-  { key: 'prompt_provision',         label: '⑥ 💬 Provision',      desc: '5단계 — 답을 직접 제공하고 유닛 종료 (응답을 기다리지 않음)' },
-  { key: 'prompt_confirm_invite',    label: '⑦ 💬 Confirm Invite',  desc: 'PI·PSV 충족 후 정리 + "다음으로 넘어갈까요?"' },
-  { key: 'prompt_confirmation',      label: '⑧ ⚖ Confirmation',    desc: '전환 질문에 대한 학생 의사 판정 (move_on·continue_help·unclear)' },
-  { key: 'prompt_post_confirm',      label: '⑨ 💬 Post Confirm',    desc: 'continue_help 일 때 직접 설명 1회 후 유닛 종료' },
-  { key: 'prompt_closing',           label: '⑩ 💬 Closing',         desc: '마지막 탭 종료 시 세션 요약 — 세션의 마지막 발화' },
+  { key: 'prompt_word_count',        label: '② 💬 Word Count',     desc: '첫 탭 오프닝에만 붙는 분량 안내 — 140~200단어를 벗어날 때만 주입 ({word_count}, {status} 치환)' },
+  { key: 'prompt_opening',           label: '③ 💬 Opening',        desc: '탭 첫 발화 — 항목 키만 받는다 (진단·요약문·지문 미전달)' },
+  { key: 'prompt_analysis',          label: '④ ⚖ Analysis',        desc: '매 응답 분류(on_track·confusion·off_topic) + 활성 목표 PI/PSV 판정' },
+  { key: 'prompt_recovery',          label: '⑤ 💬 Recovery',       desc: 'confusion·off_topic 복구 — 직전 발화와 학생 응답만 받는다 (mode 로 분기)' },
+  { key: 'prompt_mediation',         label: '⑥ 💬 Mediation',      desc: '1~4단계 — 확정된 목표·단계에서 발화 (쓴 단계를 함께 신고)' },
+  { key: 'prompt_provision',         label: '⑦ 💬 Provision',      desc: '5단계 — 답을 직접 제공하고 유닛 종료 (응답을 기다리지 않음)' },
+  { key: 'prompt_confirm_invite',    label: '⑧ 💬 Confirm Invite',  desc: 'PI·PSV 충족 후 정리 + "다음으로 넘어갈까요?"' },
+  { key: 'prompt_confirmation',      label: '⑨ ⚖ Confirmation',    desc: '전환 질문에 대한 학생 의사 판정 (move_on·continue_help·unclear)' },
+  { key: 'prompt_post_confirm',      label: '⑩ 💬 Post Confirm',    desc: 'continue_help 일 때 직접 설명 1회 후 유닛 종료' },
+  { key: 'prompt_closing',           label: '⑪ 💬 Closing',         desc: '마지막 탭 종료 시 세션 요약 — 세션의 마지막 발화' },
 ];
 
 // 코드가 더 이상 읽지 않지만, 내용을 각 턴 프롬프트로 옮기는 동안 열람용으로 남겨 둔다.
@@ -61,6 +62,7 @@ function outputFor(key: string): OutputInfo {
   if (UTTERANCE_KEYS.includes(key)) return { shape: '평문 발화', contract: OUTPUT_UTTERANCE };
   if (key === 'prompt_system') return { shape: '직접 호출 없음', note: '모든 턴(판정·발화)의 system 맨 앞에 주입됩니다. 출력 형식은 그 턴의 계약을 따릅니다.' };
   if (key === 'prompt_style') return { shape: '직접 호출 없음', note: '발화 턴 7종의 프롬프트 앞에 주입됩니다. 출력은 평문 발화입니다.' };
+  if (key === 'prompt_word_count') return { shape: '직접 호출 없음', note: '첫 탭 오프닝에서 요약문 단어 수가 140~200 범위를 벗어난 경우에만 Opening 프롬프트 뒤에 주입됩니다. {word_count} 는 실제 단어 수로, {status} 는 too_short / too_long 으로 치환됩니다.' };
   return { shape: '미사용', note: '코드가 읽지 않습니다. 내용을 각 턴 프롬프트로 옮기는 동안 열람용으로만 남아 있습니다.' };
 }
 
