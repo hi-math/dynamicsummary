@@ -12,7 +12,8 @@ import {
   startDASession, sendDAMessage, studentAdvancePhase,
 } from '@/actions/student';
 import { sendHumanMessage, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
-import { cycleKeyFromPhase } from '@/lib/phases';
+import { cycleKeyFromPhase, isValidPhase } from '@/lib/phases';
+import Modal from '@/components/ui/Modal';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
 
 type Passage = { cycle_key: string; title: string; content: string };
@@ -198,7 +199,8 @@ export default function DASession({
   // Human team: mentor's "학습 완료" flag. When true, the chat is closed with a
   // system notice and the "사이클 종료" button below becomes enabled.
   const [learningCompleted, setLearningCompleted] = useState(!!sessionData?.learning_completed);
-  // "사이클 종료" button in-flight state
+  // "사이클 종료" 확인 모달 + 전송 중 상태
+  const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishing, setFinishing] = useState(false);
 
   // Human team: allow collapsing the chat panel to widen the reading/summary area
@@ -240,6 +242,10 @@ export default function DASession({
   const allResolved = tabs.length > 0 && tabs.every((k) => daState?.resolutions[k]);
   const daFinished = isChatbot ? allResolved : learningCompleted;
   const cycleNum = cycleKeyFromPhase(phase).replace('cycle', '');
+  // 대기 화면에서 기다리게 되는 다음 사이클. 마지막 사이클이면 다음이 없다.
+  const nextCycleNum = isValidPhase(`cycle${Number(cycleNum) + 1}_draft`)
+    ? String(Number(cycleNum) + 1)
+    : null;
 
   // Poll the student's phase; when the admin advances it (e.g. to the cycle-done phase),
   // re-render so the router switches away from the DA page. The completion/waiting screen
@@ -427,6 +433,7 @@ export default function DASession({
 
       // 탭 전환은 서버 엔진이 이미 처리했다. 새 탭의 첫 발화만 그 탭에 붙인다.
       // 자동으로 넘기지 않고, 학생이 마지막 메시지를 읽은 뒤 직접 이동하게 둔다.
+      // 완료 안내는 사라지는 토스트가 아니라 대화 끝에 남는 완료 카드가 담당한다.
       if (res.tab_unlocked && res.next_opening) {
         const nextKey = res.updated_state.priority_queue[res.updated_state.current_item_idx];
         if (nextKey) {
@@ -435,9 +442,6 @@ export default function DASession({
             [nextKey]: [{ role: 'assistant', content: res.next_opening!, id: String(Date.now() + 3) }],
           }));
         }
-        showToast(`과제 ${activeTabIdx + 1} 완료! 과제 ${activeTabIdx + 2} 탭을 클릭해 다음 과제로 이동하세요.`, 'success');
-      } else if (res.session_complete) {
-        showToast('모든 과제를 완료했습니다! 다음 단계로 이동하세요.', 'success');
       }
     }
 
@@ -482,11 +486,17 @@ export default function DASession({
   }
 
   // "사이클 종료" — advance the student from cycleN_da to the separate cycleN_done phase.
+  // 되돌릴 수 없는 이동이라 드래프트·이해도검사 단계와 같은 확인 모달을 거친다.
   async function handleFinishCycle() {
     if (finishing || !daFinished) return;
     setFinishing(true);
     const res = await studentAdvancePhase(session.id);
-    if (res?.error) { showToast(res.error, 'error'); setFinishing(false); return; }
+    if (res?.error) {
+      showToast(res.error, 'error');
+      setFinishing(false);
+      setShowFinishModal(false);
+      return;
+    }
     router.refresh();
   }
 
@@ -528,6 +538,10 @@ export default function DASession({
 
     const activeMessages = messagesPerItem[activeItemKey] ?? [];
     const isResolved = daState.resolutions[activeItemKey] ?? false;
+    // 넘어갈 탭이 남아 있는지로 안내 문구를 가른다. allResolved 를 함께 보는 이유는
+    // 27분 제한으로 세션이 조기 종료되면 남은 탭이 한꺼번에 해제되기 때문이다 —
+    // 그때는 마지막 탭이 아니어도 다음 탭으로 보내면 안 된다.
+    const isFinalTask = allResolved || activeTabIdx === tabs.length - 1;
 
     return (
       <div className="h-full flex flex-col bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -589,8 +603,12 @@ export default function DASession({
               </div>
             )}
             {isResolved && (
-              <div className="flex justify-center my-2">
-                <span className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full">과제 완료 ✓</span>
+              <div className="mt-3 mb-1 px-4 py-3 rounded-xl bg-emerald-50 border-2 border-emerald-400 shadow-sm">
+                <p className="text-sm font-bold text-emerald-800 text-center leading-relaxed break-keep">
+                  {isFinalTask
+                    ? `과제 ${activeTabIdx + 1} 완료! 수정본을 작성한 후 사이클을 종료해주세요 🫠`
+                    : `과제 ${activeTabIdx + 1} 완료! 채팅창 상단에서 다음 탭으로 넘어가주세요 😁`}
+                </p>
               </div>
             )}
           </div>
@@ -778,7 +796,7 @@ export default function DASession({
           </span>
         )}
         <button
-          onClick={handleFinishCycle}
+          onClick={() => setShowFinishModal(true)}
           disabled={!daFinished || finishing}
           title={daFinished ? '' : '동적평가가 완료되면 활성화됩니다.'}
           className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
@@ -786,6 +804,44 @@ export default function DASession({
           {finishing ? '이동 중...' : `사이클 ${cycleNum} 종료`}
         </button>
       </div>
+
+      {/* 사이클 종료 확인 — 되돌릴 수 없는 이동이므로 기본값은 '취소'다.
+          Enter·Escape 모두 취소로 빠지도록 취소 버튼에 포커스를 준다. */}
+      <Modal
+        open={showFinishModal}
+        onClose={() => !finishing && setShowFinishModal(false)}
+        title={`사이클 ${cycleNum} 종료`}
+      >
+        <p className="text-sm text-slate-600 mb-3">
+          {nextCycleNum ? `사이클 ${nextCycleNum} 대기화면으로 넘어갑니다.` : '대기화면으로 넘어갑니다.'}
+        </p>
+        <p className="text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-6">
+          주의 : 수정본 작성을 완료해야 합니다.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={() => setShowFinishModal(false)}
+            disabled={finishing}
+            className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800 disabled:opacity-40 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 transition-colors"
+          >
+            취소
+          </button>
+          <button
+            onClick={handleFinishCycle}
+            disabled={finishing}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+          >
+            {finishing && (
+              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            )}
+            {finishing ? '이동 중...' : '완료'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }
