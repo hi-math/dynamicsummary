@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   sendHumanMessage, getMentorStudents,
-  updatePresence, getPresenceBatch, getStudentSummary, getCyclePassage,
+  updatePresence, getOnlineBatch, getStudentSummary, getCyclePassage,
   getMentorNote, saveMentorNote, getLearningComplete, setLearningComplete,
 } from '@/actions/mentor';
 import { isDAPhase, cycleKeyFromPhase, PHASE_LABEL, PHASE_GROUPS } from '@/lib/phases';
@@ -16,9 +16,8 @@ import type { HumanMessage, User, SessionCookie } from '@/types';
 
 type Passage = { title: string; content: string };
 
-function isOnline(lastSeen?: string): boolean {
-  return !!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 45000;
-}
+// 접속 판정은 서버가 한다 (getOnlineBatch). 클라이언트 시계로 last_seen 을 비교하면
+// PC 시계가 어긋난 만큼 상대가 계속 오프라인으로 보인다 — lib/presence.ts 참고.
 
 // Keep optimistic (tmp_) messages the server hasn't confirmed yet, so a poll landing
 // before the insert commits can't momentarily wipe a just-sent message.
@@ -335,7 +334,7 @@ export default function MentorClient({
   const [students, setStudents] = useState<User[]>(initialStudents);
   const [selected, setSelected] = useState<User | null>(null);
   const [messages, setMessages] = useState<HumanMessage[]>([]);
-  const [presenceMap, setPresenceMap] = useState<Record<string, string>>({});
+  const [presenceMap, setPresenceMap] = useState<Record<string, boolean>>({});
   const [passage, setPassage] = useState<Passage | null>(null);
   const [studentSummary, setStudentSummary] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
@@ -368,7 +367,7 @@ export default function MentorClient({
   useEffect(() => {
     if (students.length === 0) return;
     async function poll() {
-      const map = await getPresenceBatch(students.map((s) => s.id));
+      const map = await getOnlineBatch(students.map((s) => s.id));
       setPresenceMap(map);
     }
     poll();
@@ -500,7 +499,7 @@ export default function MentorClient({
   }
 
   const inDA = selected ? isDAPhase(selected.current_phase) : false;
-  const studentOnline = selected ? isOnline(presenceMap[selected.id]) : false;
+  const studentOnline = selected ? (presenceMap[selected.id] ?? false) : false;
 
   return (
     <div className="flex flex-1 overflow-hidden h-full">
@@ -548,7 +547,7 @@ export default function MentorClient({
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${isOnline(presenceMap[s.id]) ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${presenceMap[s.id] ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                   <p className={`text-base font-medium truncate ${selected?.id === s.id ? 'text-indigo-700' : 'text-slate-700'}`}>
                     {s.name}
                   </p>

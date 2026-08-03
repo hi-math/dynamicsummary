@@ -11,7 +11,7 @@ import {
   submitDraft, saveStudentNote, saveSummary, getCurrentUser,
   startDASession, sendDAMessage, studentAdvancePhase,
 } from '@/actions/student';
-import { sendHumanMessage, updatePresence, getPresence, getLearningComplete } from '@/actions/mentor';
+import { sendHumanMessage, updatePresence, isUserOnline, getLearningComplete } from '@/actions/mentor';
 import { cycleKeyFromPhase, isValidPhase } from '@/lib/phases';
 import Modal from '@/components/ui/Modal';
 import type { SessionCookie, SessionData, AIMessage, HumanMessage, DASessionState } from '@/types';
@@ -367,14 +367,13 @@ export default function DASession({
     return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis); };
   }, [session.id, isChatbot]);
 
-  // Poll mentor presence every 5s. Online window is 45s so a couple of missed
-  // heartbeats (throttling / server-action queueing) don't flip to offline.
+  // Poll mentor presence every 5s. 판정은 서버가 한다 (lib/presence.ts) —
+  // 클라이언트 시계로 비교하면 학생 PC 시계가 어긋난 만큼 멘토가 계속 오프라인으로 보인다.
   useEffect(() => {
     if (isChatbot || !mentorId) return;
     async function checkMentor() {
       if (!mentorId) return;
-      const lastSeen = await getPresence(mentorId);
-      setMentorOnline(!!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < 45000);
+      setMentorOnline(await isUserOnline(mentorId));
     }
     checkMentor();
     const interval = setInterval(checkMentor, 5000);
@@ -628,8 +627,12 @@ export default function DASession({
   }
 
   function renderHumanPanel() {
-    const mentorLabel = mentorName ?? '멘토';
-    const chatEnabled = mentorOnline;
+    // 멘토 미배정(users.mentor_id 없음)은 '오프라인'과 다른 상태다. 예전에는 둘 다
+    // 회색 점 + "멘토가 접속하면 채팅이 활성화됩니다."로 보여서, 관리자가 배정을 빠뜨린
+    // 것인지 멘토가 아직 안 들어온 것인지 학생도 연구자도 구분할 수 없었다.
+    const mentorAssigned = !!mentorId;
+    const mentorLabel = mentorName ?? (mentorAssigned ? '멘토' : '멘토 미배정');
+    const chatEnabled = mentorAssigned && mentorOnline;
 
     return (
       <div className="h-full flex flex-col bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -652,19 +655,32 @@ export default function DASession({
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               나 (접속 중)
             </span>
-            <span className={`flex items-center gap-1.5 text-xs ${mentorOnline ? 'text-emerald-600' : 'text-slate-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${mentorOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
-              {mentorLabel} {mentorOnline ? '(접속 중)' : '(오프라인)'}
-            </span>
+            {mentorAssigned ? (
+              <span className={`flex items-center gap-1.5 text-xs ${mentorOnline ? 'text-emerald-600' : 'text-slate-400'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${mentorOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
+                {mentorLabel} {mentorOnline ? '(접속 중)' : '(오프라인)'}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-xs text-red-500">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                멘토 미배정
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Offline notice */}
-        {!chatEnabled && (
+        {/* 미배정 / 오프라인 안내 — 둘은 조치할 사람이 다르므로 문구를 나눈다. */}
+        {!mentorAssigned ? (
+          <div className="px-3 py-2 bg-red-50 border-b border-red-100 shrink-0">
+            <p className="text-xs text-red-700 font-medium">
+              멘토가 배정되지 않았습니다. 관리자에게 문의해주세요.
+            </p>
+          </div>
+        ) : !chatEnabled ? (
           <div className="px-3 py-2 bg-amber-50 border-b border-amber-100 shrink-0">
             <p className="text-xs text-amber-700">멘토가 접속하면 채팅이 활성화됩니다.</p>
           </div>
-        )}
+        ) : null}
 
         {/* Messages */}
         <div className="relative flex-1 min-h-0">
@@ -711,7 +727,12 @@ export default function DASession({
           onSend={handleHumanSend}
           loading={chatLoading}
           disabled={!chatEnabled || learningCompleted}
-          placeholder={learningCompleted ? '대화가 종료되었습니다.' : chatEnabled ? '메시지를 입력하세요...' : '멘토 접속 대기 중...'}
+          placeholder={
+            learningCompleted ? '대화가 종료되었습니다.'
+            : chatEnabled ? '메시지를 입력하세요...'
+            : mentorAssigned ? '멘토 접속 대기 중...'
+            : '멘토 미배정 — 관리자 문의'
+          }
         />
       </div>
     );

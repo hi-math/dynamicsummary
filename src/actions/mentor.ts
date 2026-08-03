@@ -23,6 +23,7 @@
 // -- ALTER TABLE session_data ADD COLUMN IF NOT EXISTS learning_completed boolean NOT NULL DEFAULT false;
 
 import { createServerClient } from '@/lib/supabase-server';
+import { isFresh } from '@/lib/presence';
 import type { HumanMessage, User } from '@/types';
 
 export async function getMentorStudents(mentorId: string): Promise<User[]> {
@@ -73,10 +74,15 @@ export async function updatePresence(userId: string): Promise<void> {
   );
 }
 
-export async function getPresence(userId: string): Promise<string | null> {
+/**
+ * 접속 여부. 판정은 **서버 시계 하나로만** 한다 (lib/presence.ts 주석 참고) —
+ * 예전처럼 last_seen 문자열을 그대로 내려보내 클라이언트가 비교하면,
+ * 사용자 PC 시계가 어긋난 만큼 상대가 계속 오프라인으로 보인다.
+ */
+export async function isUserOnline(userId: string): Promise<boolean> {
   const supabase = createServerClient();
-  const { data } = await supabase.from('presence').select('last_seen').eq('user_id', userId).single();
-  return data?.last_seen ?? null;
+  const { data } = await supabase.from('presence').select('last_seen').eq('user_id', userId).maybeSingle();
+  return isFresh(data?.last_seen);
 }
 
 // Typing indicator — reuses the presence row. `typing_at` is refreshed while the user
@@ -98,11 +104,14 @@ export async function getTyping(userId: string): Promise<string | null> {
   return data?.typing_at ?? null;
 }
 
-export async function getPresenceBatch(userIds: string[]): Promise<Record<string, string>> {
+/** 여러 사용자의 접속 여부. 판정 기준은 isUserOnline 과 같다 (서버 시계). */
+export async function getOnlineBatch(userIds: string[]): Promise<Record<string, boolean>> {
   if (userIds.length === 0) return {};
   const supabase = createServerClient();
   const { data } = await supabase.from('presence').select('user_id, last_seen').in('user_id', userIds);
-  return Object.fromEntries((data ?? []).map((r: { user_id: string; last_seen: string }) => [r.user_id, r.last_seen]));
+  return Object.fromEntries(
+    (data ?? []).map((r: { user_id: string; last_seen: string }) => [r.user_id, isFresh(r.last_seen)]),
+  );
 }
 
 export async function getMentorById(mentorId: string): Promise<{ id: string; name: string } | null> {
