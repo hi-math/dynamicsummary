@@ -555,7 +555,10 @@ export default function DASession({
                 key={key}
                 onClick={() => { if (!locked) setActiveTabIdx(idx); }}
                 disabled={locked}
-                className={`flex-1 py-2.5 text-xs font-semibold transition-colors border-b-2 ${
+                // min-w-0 + nowrap: 라벨이 길어져도 줄바꿈하거나 탭 폭을 밀어내지 않는다.
+                // (버튼의 기본 min-width:auto 를 그대로 두면 세 번째 탭이 패널
+                //  overflow-hidden 에 잘려 사라질 수 있다.)
+                className={`flex-1 min-w-0 py-2.5 px-1 whitespace-nowrap text-[11px] xl:text-xs font-semibold transition-colors border-b-2 ${
                   resolved && isActive
                     ? 'border-emerald-500 text-emerald-700 bg-emerald-50'
                     : resolved
@@ -567,7 +570,7 @@ export default function DASession({
                     : 'border-transparent text-slate-400 hover:text-slate-600'
                 }`}
               >
-                과제 {idx + 1}
+                Feedback {idx + 1}
               </button>
             );
           })}
@@ -605,8 +608,8 @@ export default function DASession({
               <div className="mt-3 mb-1 px-4 py-3 rounded-xl bg-emerald-50 border-2 border-emerald-400 shadow-sm">
                 <p className="text-sm font-bold text-emerald-800 text-center leading-relaxed break-keep">
                   {isFinalTask
-                    ? `과제 ${activeTabIdx + 1} 완료! 수정본을 작성한 후 사이클을 종료해주세요 🫠`
-                    : `과제 ${activeTabIdx + 1} 완료! 채팅창 상단에서 다음 탭으로 넘어가주세요 😁`}
+                    ? `Feedback ${activeTabIdx + 1} 완료! 수정본을 작성한 후 사이클을 종료해주세요 🫠`
+                    : `Feedback ${activeTabIdx + 1} 완료! 채팅창 상단에서 다음 탭으로 넘어가주세요 😁`}
                 </p>
               </div>
             )}
@@ -813,7 +816,7 @@ export default function DASession({
       <div className="shrink-0 flex items-center justify-end gap-3 pt-1">
         {!daFinished && isChatbot && (
           <span className="text-xs text-slate-400">
-            모든 과제를 완료하면 종료할 수 있습니다.
+            모든 탭을 완료하면 종료할 수 있습니다.
           </span>
         )}
         <button

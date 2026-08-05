@@ -11,6 +11,15 @@ type Passage = { cycle_key: string; title: string; content: string };
 
 const TIME_LIMIT_SEC = 180; // 3 minutes
 
+function Spinner() {
+  return (
+    <svg className="w-3.5 h-3.5 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+    </svg>
+  );
+}
+
 export default function ComprehensionPhase({
   session,
   phase,
@@ -32,8 +41,13 @@ export default function ComprehensionPhase({
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(alreadySubmitted);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  // 동적평가 첫 피드백을 기다리는 중 (Assessor + 오프닝 생성). 제출 처리와 구분해서
+  // 버튼 문구를 바꾼다 — 학생 입장에서 수십 초가 걸리는 구간은 여기다.
+  const [generating, setGenerating] = useState(false);
   const startRef = useRef(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 백그라운드로 시작한 사전 생성 작업. 제출 시 이 약속을 그대로 기다린다.
+  const preGenRef = useRef<Promise<{ success: boolean; error?: string }> | null>(null);
 
   useEffect(() => {
     if (submitted) return;
@@ -54,32 +68,64 @@ export default function ComprehensionPhase({
 
   // Pre-generate DA session in background while student answers comprehension questions
   useEffect(() => {
-    if (session.team !== 'chatbot') return;
-    if (!draftSummary?.trim() || !passage.content?.trim()) return;
-    const daPhase = phase.replace('_comprehension', '_da');
-    preGenerateDASession(session.id, daPhase, draftSummary, passage.content);
+    preGenRef.current = startPreGeneration();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * 동적평가 사전 생성 시작. 이미 시작했으면 그 약속을 재사용한다.
+   *
+   * 제출 시 이 약속을 await 하므로, 학생이 문항을 푸는 동안 끝났으면 대기 없이 넘어가고
+   * 아직 돌고 있으면 끝날 때까지 기다린다. 기다리지 않고 단계를 넘기면 DA 화면이
+   * 사전 생성이 진행 중인 줄 모르고 Assessor 를 한 번 더 돌린다 (같은 평가 중복 호출).
+   */
+  function startPreGeneration(): Promise<{ success: boolean; error?: string }> | null {
+    if (session.team !== 'chatbot') return null;
+    if (!draftSummary?.trim() || !passage.content?.trim()) return null;
+    const daPhase = phase.replace('_comprehension', '_da');
+    return preGenerateDASession(session.id, daPhase, draftSummary, passage.content)
+      .catch((e: unknown) => ({ success: false, error: e instanceof Error ? e.message : '피드백 생성 실패' }));
+  }
 
   async function handleSubmitAndAdvance(byTimer = false) {
     if (submitting) return;
     setSubmitting(true);
-    setShowConfirmModal(false);
     if (timerRef.current) clearInterval(timerRef.current);
 
     const elapsed = Math.round((Date.now() - startRef.current) / 1000);
     await submitComprehensionAnswers(session.id, phase, answers, elapsed);
     setSubmitted(true);
-
     if (!byTimer) showToast('이해도 검사가 제출되었습니다.', 'success');
-    await studentAdvancePhase(session.id);
-    setSubmitting(false);
+
+    await awaitFeedbackThenAdvance();
+    setShowConfirmModal(false);
   }
 
-  async function handleAdvance() {
-    setSubmitting(true);
+  /**
+   * 첫 피드백이 준비된 뒤에 단계를 넘긴다.
+   *
+   * 여기서 기다리지 않으면 학생은 빈 동적평가 화면에서 '평가 준비 중...' 스피너만 보게 된다.
+   * 어차피 같은 시간을 기다리지만, 무엇을 기다리는지 모르는 채로 기다리게 된다.
+   */
+  async function awaitFeedbackThenAdvance() {
+    const pending = preGenRef.current ?? startPreGeneration();
+    preGenRef.current = pending;
+    if (pending) {
+      setGenerating(true);
+      const res = await pending;
+      // 실패해도 단계는 넘긴다 — DA 화면에 오류와 '다시 시도' 버튼이 있다.
+      if (res?.error) showToast(`피드백 생성 실패: ${res.error}`, 'error');
+    }
     await studentAdvancePhase(session.id);
     setSubmitting(false);
+    setGenerating(false);
+  }
+
+  // 이해도 검사 문항이 없는 경우의 '다음 단계로'. 이때도 피드백을 기다린다.
+  async function handleAdvance() {
+    if (submitting) return;
+    setSubmitting(true);
+    await awaitFeedbackThenAdvance();
   }
 
   const allAnswered = questions.length > 0 && questions.every((q) => answers[q.id]?.trim());
@@ -93,9 +139,10 @@ export default function ComprehensionPhase({
         <button
           onClick={handleAdvance}
           disabled={submitting}
-          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors"
+          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
         >
-          {submitting ? '처리 중...' : '다음 단계로'}
+          {submitting && <Spinner />}
+          {generating ? '피드백 생성 중...' : submitting ? '처리 중...' : '다음 단계로'}
         </button>
       </div>
     );
@@ -160,9 +207,10 @@ export default function ComprehensionPhase({
           <button
             onClick={() => setShowConfirmModal(true)}
             disabled={submitting || !allAnswered}
-            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
           >
-            제출
+            {submitting && <Spinner />}
+            {generating ? '피드백 생성 중...' : submitting ? '처리 중...' : '제출'}
           </button>
         </div>
       </div>
@@ -174,8 +222,17 @@ export default function ComprehensionPhase({
         title="이해도 검사 제출"
       >
         <p className="text-sm text-slate-600 mb-6">
-          이해도 검사를 제출하시겠습니까?<br />
-          <span className="text-slate-400 text-xs">제출 후에는 수정할 수 없습니다.</span>
+          {generating ? (
+            <>
+              피드백을 생성하고 있습니다.<br />
+              <span className="text-slate-400 text-xs">준비가 끝나면 자동으로 이동합니다. 창을 닫지 마세요.</span>
+            </>
+          ) : (
+            <>
+              이해도 검사를 제출하시겠습니까?<br />
+              <span className="text-slate-400 text-xs">제출 후에는 수정할 수 없습니다.</span>
+            </>
+          )}
         </p>
         <div className="flex justify-end gap-2">
           <button
@@ -190,13 +247,8 @@ export default function ComprehensionPhase({
             disabled={submitting}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
           >
-            {submitting && (
-              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
-            )}
-            {submitting ? '처리 중...' : '제출'}
+            {submitting && <Spinner />}
+            {generating ? '피드백 생성 중...' : submitting ? '처리 중...' : '제출'}
           </button>
         </div>
       </Modal>
