@@ -1,8 +1,9 @@
 'use client';
 
-import { isDraftPhase, isComprehensionPhase, isDAPhase, isDonePhase } from '@/lib/phases';
+import { isDraftPhase, isComprehensionPhase, isBreakPhase, isDAPhase, isDonePhase } from '@/lib/phases';
 import DraftPhase from './DraftPhase';
 import ComprehensionPhase from './ComprehensionPhase';
+import BreakPhase from './BreakPhase';
 import DASession from './DASession';
 import CycleCompletePhase from './CycleCompletePhase';
 import { ToastProvider } from '@/components/ui/Toast';
@@ -65,6 +66,9 @@ export default function StudentRouter({
           draftSummary={draftSummary}
           passage={passage}
         />
+      )}
+      {isBreakPhase(phase) && (
+        <BreakPhase key={phase} session={session} phase={phase} />
       )}
       {isDAPhase(phase) && (
         <DASession

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createServerClient } from '@/lib/supabase-server';
-import { nextPhase, cycleKeyFromPhase } from '@/lib/phases';
+import { nextPhaseFor, cycleKeyFromPhase } from '@/lib/phases';
 import { initDASession, processTurn, createInitialState } from '@/lib/da-pipeline';
 import type { TurnResult } from '@/lib/da-pipeline';
 import type { UnitTurn } from '@/lib/da-nodes';
@@ -90,11 +90,12 @@ export async function getCurrentUser(studentId: string) {
 
 export async function studentAdvancePhase(studentId: string) {
   const supabase = createServerClient();
-  const { data: user } = await supabase.from('users').select('current_phase').eq('id', studentId).single();
+  const { data: user } = await supabase.from('users').select('current_phase, team').eq('id', studentId).single();
   if (!user) return { error: '사용자를 찾을 수 없습니다.' };
 
   const current = user.current_phase as Phase;
-  const next = nextPhase(current);
+  // 브레이크는 챗봇팀 전용 — 휴먼팀은 이해도검사 제출 후 바로 동적평가로 넘어간다.
+  const next = nextPhaseFor(current, user.team as string | null);
   if (next === current) return { success: true };
 
   const { error } = await supabase.from('users').update({ current_phase: next }).eq('id', studentId);

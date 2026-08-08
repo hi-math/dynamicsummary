@@ -1,8 +1,8 @@
 export const PHASES = [
-  'cycle1_draft', 'cycle1_comprehension', 'cycle1_da', 'cycle1_done',
-  'cycle2_draft', 'cycle2_comprehension', 'cycle2_da', 'cycle2_done',
-  'cycle3_draft', 'cycle3_comprehension', 'cycle3_da', 'cycle3_done',
-  'cycle4_draft', 'cycle4_comprehension', 'cycle4_da', 'cycle4_done',
+  'cycle1_draft', 'cycle1_comprehension', 'cycle1_break', 'cycle1_da', 'cycle1_done',
+  'cycle2_draft', 'cycle2_comprehension', 'cycle2_break', 'cycle2_da', 'cycle2_done',
+  'cycle3_draft', 'cycle3_comprehension', 'cycle3_break', 'cycle3_da', 'cycle3_done',
+  'cycle4_draft', 'cycle4_comprehension', 'cycle4_break', 'cycle4_da', 'cycle4_done',
 ] as const;
 
 export type Phase = typeof PHASES[number];
@@ -10,18 +10,22 @@ export type Phase = typeof PHASES[number];
 export const PHASE_LABEL: Record<Phase, string> = {
   cycle1_draft:         'C1 드래프트',
   cycle1_comprehension: 'C1 이해도검사',
+  cycle1_break:         'C1 브레이크',
   cycle1_da:            'C1 동적평가',
   cycle1_done:          'C1 종료',
   cycle2_draft:         'C2 드래프트',
   cycle2_comprehension: 'C2 이해도검사',
+  cycle2_break:         'C2 브레이크',
   cycle2_da:            'C2 동적평가',
   cycle2_done:          'C2 종료',
   cycle3_draft:         'C3 드래프트',
   cycle3_comprehension: 'C3 이해도검사',
+  cycle3_break:         'C3 브레이크',
   cycle3_da:            'C3 동적평가',
   cycle3_done:          'C3 종료',
   cycle4_draft:         'C4 드래프트',
   cycle4_comprehension: 'C4 이해도검사',
+  cycle4_break:         'C4 브레이크',
   cycle4_da:            'C4 동적평가',
   cycle4_done:          'C4 종료',
 };
@@ -29,20 +33,35 @@ export const PHASE_LABEL: Record<Phase, string> = {
 export const STAGE_SHORT: Record<string, string> = {
   _draft:         '드래프트',
   _comprehension: '이해도검사',
+  _break:         '브레이크',
   _da:            '동적평가',
   _done:          '종료',
 };
 
 export const PHASE_GROUPS = [
-  { key: 'cycle1', label: '사이클 1', phases: ['cycle1_draft','cycle1_comprehension','cycle1_da','cycle1_done'] as Phase[] },
-  { key: 'cycle2', label: '사이클 2', phases: ['cycle2_draft','cycle2_comprehension','cycle2_da','cycle2_done'] as Phase[] },
-  { key: 'cycle3', label: '사이클 3', phases: ['cycle3_draft','cycle3_comprehension','cycle3_da','cycle3_done'] as Phase[] },
-  { key: 'cycle4', label: '사이클 4', phases: ['cycle4_draft','cycle4_comprehension','cycle4_da','cycle4_done'] as Phase[] },
+  { key: 'cycle1', label: '사이클 1', phases: ['cycle1_draft','cycle1_comprehension','cycle1_break','cycle1_da','cycle1_done'] as Phase[] },
+  { key: 'cycle2', label: '사이클 2', phases: ['cycle2_draft','cycle2_comprehension','cycle2_break','cycle2_da','cycle2_done'] as Phase[] },
+  { key: 'cycle3', label: '사이클 3', phases: ['cycle3_draft','cycle3_comprehension','cycle3_break','cycle3_da','cycle3_done'] as Phase[] },
+  { key: 'cycle4', label: '사이클 4', phases: ['cycle4_draft','cycle4_comprehension','cycle4_break','cycle4_da','cycle4_done'] as Phase[] },
 ];
 
 export function nextPhase(p: Phase): Phase {
   const idx = PHASES.indexOf(p);
   return idx < PHASES.length - 1 ? PHASES[idx + 1] : p;
+}
+
+/**
+ * 팀에 따라 브레이크 단계를 건너뛰는 다음 단계.
+ *
+ * 브레이크는 **챗봇팀 전용**이다. 휴먼팀은 이해도검사 다음이 곧바로 동적평가이고,
+ * 멘토를 기다리는 시간이 그 역할을 대신한다. 단계를 전진시키는 곳(관리자 '→ 다음 단계',
+ * 학생 자동 전진)은 모두 nextPhase 대신 이 함수를 써야 휴먼팀이 브레이크에 갇히지 않는다.
+ * 관리자가 '단계 설정'으로 임의 지정하는 경로는 그대로 둔다 — 의도적 지정은 존중한다.
+ */
+export function nextPhaseFor(p: Phase, team: string | null | undefined): Phase {
+  const next = nextPhase(p);
+  if (isBreakPhase(next) && team !== 'chatbot') return nextPhase(next);
+  return next;
 }
 
 export function prevPhase(p: Phase): Phase {
@@ -52,6 +71,7 @@ export function prevPhase(p: Phase): Phase {
 
 export function isDraftPhase(p: string): boolean        { return p.endsWith('_draft'); }
 export function isComprehensionPhase(p: string): boolean { return p.endsWith('_comprehension'); }
+export function isBreakPhase(p: string): boolean         { return p.endsWith('_break'); }
 export function isDAPhase(p: string): boolean            { return p.endsWith('_da'); }
 export function isDonePhase(p: string): boolean          { return p.endsWith('_done'); }
 
@@ -59,6 +79,7 @@ export function cycleKeyFromPhase(p: string): string {
   return p
     .replace('_draft', '')
     .replace('_comprehension', '')
+    .replace('_break', '')
     .replace('_da', '')
     .replace('_done', '');
 }

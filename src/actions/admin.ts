@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { createServerClient } from '@/lib/supabase-server';
 import type { APISettings, User } from '@/types';
 import type { Phase } from '@/lib/phases';
-import { nextPhase, PHASES, isValidPhase } from '@/lib/phases';
+import { nextPhaseFor, PHASES, isValidPhase } from '@/lib/phases';
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 
@@ -102,14 +102,15 @@ export async function advancePhase(studentId: string) {
   const supabase = createServerClient();
   const { data: user, error: fetchError } = await supabase
     .from('users')
-    .select('current_phase')
+    .select('current_phase, team')
     .eq('id', studentId)
     .single();
 
   if (fetchError || !user) return { error: '사용자를 찾을 수 없습니다.' };
 
   const currentPhase = user.current_phase as Phase;
-  const next = nextPhase(currentPhase);
+  // 브레이크는 챗봇팀 전용 — 휴먼팀은 이해도검사에서 곧바로 동적평가로 넘어간다.
+  const next = nextPhaseFor(currentPhase, user.team as string | null);
   if (next === currentPhase) return { error: '이미 마지막 단계입니다.' };
 
   const { error } = await supabase

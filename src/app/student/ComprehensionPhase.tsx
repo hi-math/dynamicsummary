@@ -142,7 +142,7 @@ export default function ComprehensionPhase({
           className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
         >
           {submitting && <Spinner />}
-          {generating ? '피드백 생성 중...' : submitting ? '처리 중...' : '다음 단계로'}
+          {generating ? '동적평가 생성 중...' : submitting ? '처리 중...' : '다음 단계로'}
         </button>
       </div>
     );
@@ -210,7 +210,7 @@ export default function ComprehensionPhase({
             className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
           >
             {submitting && <Spinner />}
-            {generating ? '피드백 생성 중...' : submitting ? '처리 중...' : '제출'}
+            {generating ? '동적평가 생성 중...' : submitting ? '처리 중...' : '제출'}
           </button>
         </div>
       </div>
@@ -224,7 +224,7 @@ export default function ComprehensionPhase({
         <p className="text-sm text-slate-600 mb-6">
           {generating ? (
             <>
-              피드백을 생성하고 있습니다.<br />
+              동적평가를 생성중입니다. 잠시만 기다려주세요.<br />
               <span className="text-slate-400 text-xs">준비가 끝나면 자동으로 이동합니다. 창을 닫지 마세요.</span>
             </>
           ) : (
@@ -248,7 +248,7 @@ export default function ComprehensionPhase({
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
           >
             {submitting && <Spinner />}
-            {generating ? '피드백 생성 중...' : submitting ? '처리 중...' : '제출'}
+            {generating ? '동적평가 생성 중...' : submitting ? '처리 중...' : '제출'}
           </button>
         </div>
       </Modal>
