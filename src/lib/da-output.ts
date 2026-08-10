@@ -32,7 +32,6 @@ Return valid JSON only, using exactly this structure:
     {
       "item": "main_idea_coverage",
       "problem_priority": 1,
-      "presentation_order": 1,
       "problem_description": "...",
       "student_text_evidence": ["..."],
       "selection_rationale": "...",
@@ -44,7 +43,11 @@ Return valid JSON only, using exactly this structure:
 }
 \`\`\`
 
-Return exactly these nine fields for every selected item, and at most three items.
+Return exactly these eight fields for every selected item, and at most three items.
+
+Do not order the items and do not return any ordering field. The system arranges the
+selected items into the feedback sequence by instructional level; \`problem_priority\` is
+severity only, not presentation order.
 
 For \`student_text_evidence\`:
 

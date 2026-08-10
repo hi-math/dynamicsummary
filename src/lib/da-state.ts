@@ -25,6 +25,47 @@ export const MAX_TABS = 3;              // 학생 화면의 탭 상한
 // 동적평가(스테이지 3) 진입 후 이 시간이 지나면 남은 탭이 있어도 종료 시나리오로 간다.
 export const SESSION_TIME_LIMIT_MIN = 27;
 
+/**
+ * 평가 항목의 교수적 위계 — 탭 제시 순서의 1순위 기준.
+ *
+ * 1 = Higher-order Concerns, 2 = Mid-Level, 3 = Lower-order Concerns.
+ * 이 순서는 LLM 이 정하지 않는다. Assessor 는 `item` 과 `problem_priority`(문제
+ * 심각도)만 내고, 실제 배열은 sortAssessment() 가 강제한다 — 모델이 제시 순서를
+ * 심각도 순으로 그대로 베끼는 일이 잦아 위계가 자주 뒤집혔기 때문이다.
+ *
+ * descriptors 자산에서 관리자가 새 항목을 추가하면 여기에 없는 키가 되고,
+ * 그런 항목은 UNRANKED_LEVEL 로 취급해 맨 뒤로 보낸다.
+ */
+export const ITEM_LEVEL: Record<string, number> = {
+  main_idea_coverage: 1,
+  condensation: 1,
+  content_accuracy: 1,
+  organization: 2,
+  paraphrasing: 2,
+  language_use: 3,
+};
+const UNRANKED_LEVEL = 99;
+
+export function itemLevel(itemKey: string): number {
+  return ITEM_LEVEL[itemKey] ?? UNRANKED_LEVEL;
+}
+
+/**
+ * 중재 항목을 탭 순서대로 배열한다 — 위계(HOC → Mid → LOC) 우선, 같은 위계 안에서는
+ * `problem_priority`(1 = 가장 큼) 순. 정렬 후 앞에서부터 `presentation_order` 를
+ * 1..N 으로 다시 매기고 MAX_TABS 개로 자른다.
+ *
+ * Assessor 출력에 이 함수를 한 번 통과시킨 뒤 저장하므로, 저장된 assessor_output 의
+ * 배열 순서와 `presentation_order` 는 학생이 실제로 본 탭 순서와 항상 일치한다.
+ */
+export function sortAssessment(list: AssessmentItem[]): AssessmentItem[] {
+  return [...list]
+    .sort((a, b) =>
+      itemLevel(a.item) - itemLevel(b.item) || a.problem_priority - b.problem_priority)
+    .slice(0, MAX_TABS)
+    .map((t, i) => ({ ...t, presentation_order: i + 1 }));
+}
+
 /** 스테이지 3 진입 후 제한 시간이 지났는가. 기준 시각이 없으면 시계가 돌지 않는다. */
 export function isPastTimeLimit(state: DASessionState, now: number = Date.now()): boolean {
   const startedAt = state.stage_started_at;
@@ -82,8 +123,11 @@ export function newUnit(tab: number, item: string): ActiveUnit {
 }
 
 /**
- * 제시 순서(presentation_order)대로 정렬된 중재 항목.
- * Assessor 가 정한 순서를 코드가 재계산하지 않는다.
+ * 저장된 중재 항목을 `presentation_order` 대로 읽는다.
+ *
+ * 순서를 여기서 다시 계산하지 않는 것이 중요하다 — 저장 시점에 sortAssessment() 가
+ * 이미 위계 순으로 배열해 두었고, 그 값이 학생이 실제로 본 탭 순서다. 위계 규칙이
+ * 나중에 바뀌더라도 지난 기록(관리자 화면·CSV)은 당시 순서 그대로 보여야 한다.
  * 이미 저장된 구 스키마(mediation_targets)는 여기서 새 형태로 변환해 읽는다.
  */
 export function orderedAssessment(assessor: AssessorOutput | null): AssessmentItem[] {

@@ -20,7 +20,6 @@
 |------|------|
 | `item` | 선정된 평가 항목 |
 | `problem_priority` | 항목 간 상대적 중재 필요성 순위 (1 = 가장 큼) |
-| `presentation_order` | 피드백 세션 제시 순서 (1 = 가장 먼저) |
 | `problem_description` | 학생 글에서 확인된 구체적 문제 |
 | `student_text_evidence` | 문제를 보여 주는 학생 요약문의 인용 구절 1~2개 (배열) |
 | `selection_rationale` | 문제의 근거 + 중재 대상 선정 이유 |
@@ -28,9 +27,19 @@
 | `PI_goal` | 학생이 자기 문제를 인식하기 위해 이해해야 할 내용 |
 | `PSV_goal` | 학생이 개선 방법을 자기 말로 설명할 수 있어야 할 내용 |
 
-`problem_priority`(중재 필요성)와 `presentation_order`(제시 순서)는 별개다.
-현행 프롬프트는 제시 순서를 HOC → Mid → LOC 로 정하므로 같은 층위의 항목끼리는
-값이 겹칠 수 있다 — 정렬이 안정 정렬이라 그 경우 배열 순서가 유지된다.
+**탭 순서는 LLM 이 정하지 않는다.** Assessor 는 `item`(무엇을) 과 `problem_priority`
+(얼마나 심각한가) 만 내고, 실제 배열은 `sortAssessment()` 가 강제한다:
+
+1. 교수적 위계 — HOC(`main_idea_coverage` · `condensation` · `content_accuracy`)
+   → Mid(`organization` · `paraphrasing`) → LOC(`language_use`). `ITEM_LEVEL` 이 원천.
+2. 같은 위계 안에서는 `problem_priority` 오름차순.
+3. 정렬 후 앞 3개(`MAX_TABS`)를 남기고 `presentation_order` 를 1..N 으로 매긴다.
+
+`ITEM_LEVEL` 에 없는 항목 키(관리자가 descriptors 자산에 새로 추가한 경우)는 맨 뒤로 간다.
+
+> 2026-08-10 이전 기록은 `presentation_order` 가 LLM 값이다. 당시 8건 중 6건이
+> `problem_priority` 를 그대로 복사해 위계가 뒤집힌 사례가 있었고, 그래서 순서 결정을
+> 코드로 옮겼다. 지난 기록은 학생이 실제로 본 순서를 보존해야 하므로 재정렬하지 않는다.
 
 **출력 스키마의 원천은 `prompt_assessor` 본문이다.** 코드는 계약을 덧붙이지 않고
 파싱만 관대하게 한다: 루트 키는 `selected_items` → `assessment` → `items` 순으로 찾고,
@@ -40,7 +49,9 @@
 
 ## 턴 사이 — 코드 (LLM 없음)
 
-- `orderedAssessment()` : `presentation_order` 순 정렬 + 3개로 절단 ✅
+- `sortAssessment()` : 위계 → `problem_priority` 순 배열 + 3개로 절단 + 번호 부여 ✅
+  (Assessor 응답 직후 한 번. 저장되는 `assessor_output` 은 이미 탭 순서다)
+- `orderedAssessment()` : 저장된 순서를 그대로 읽는다 (재계산하지 않는다) ✅
 - `tabsFromPlan()` : 그 순서대로 탭 확정 ✅
 - `designateSecondaryTab()` : 새 스키마에 보조 단위가 없으므로 항상 `null` ✅
   (상태 기계의 보조 유닛 경로는 남아 있으나 발동하지 않는다)

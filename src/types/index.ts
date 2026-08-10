@@ -131,8 +131,10 @@ export type ItemDiagnosis = {
 // PSV = Problem-Solution Verbalization (왜 문제이고 어떻게 고치는지 자기 말로 설명하기)
 export type AssessmentItem = {
   item: string;                   // 선정된 평가 항목 (descriptors.json 의 item key)
-  problem_priority: number;       // 중재 필요성 순위 (1 = 가장 큼)
-  presentation_order: number;     // 피드백 세션 제시 순서 (1 = 가장 먼저). Tab 번호가 된다
+  problem_priority: number;       // 중재 필요성 순위 (1 = 가장 큼). Assessor 가 낸다
+  // 피드백 세션 제시 순서 (1 = 가장 먼저). Tab 번호가 된다.
+  // LLM 출력이 아니라 sortAssessment() 가 위계(HOC → Mid → LOC) 순으로 매긴 값이다.
+  presentation_order: number;
   problem_description: string;    // 학생 글에서 확인된 구체적 문제
   student_text_evidence: string[]; // 문제를 보여 주는 학생 요약문의 실제 인용 구절 (1~2개)
   selection_rationale: string;    // 문제의 근거 + 중재 대상으로 선정한 이유
@@ -142,7 +144,7 @@ export type AssessmentItem = {
 };
 
 export type AssessorOutput = {
-  assessment: AssessmentItem[];              // presentation_order 순으로 정렬해 쓴다
+  assessment: AssessmentItem[];              // 이미 탭 순서대로 정렬되어 저장된다
   // ── 레거시(구 2턴 스키마). 신규 세션에서는 생성되지 않으며, 이미 저장된
   //    기록을 관리자 화면/CSV 에서 계속 열어 보기 위해서만 남긴다. ──
   items?: Record<string, ItemDiagnosis>;

@@ -22,7 +22,7 @@ import { descriptorBlockAll, itemsFrom } from './descriptors';
 import {
   MAX_TABS, advanceTo, applyClassification, applyGoalVerdict, closeAllRemaining, closeUnit,
   isPastTimeLimit, isTerminalStep, newUnit, nextDestination, orderedAssessment,
-  reconcileWithUtterance,
+  reconcileWithUtterance, sortAssessment,
 } from './da-state';
 import {
   runAnalysis, runClosing, runConfirmInvite, runConfirmation, runMediation, runOpening,
@@ -100,12 +100,17 @@ Diagnose the learner's summary and select at most ${MAX_TABS} assessment items t
 require mediation.
 
 - problem_priority: relative need for mediation among the selected items (1 = greatest need).
-- presentation_order: instructional order in the feedback session (1 = presented first).
-  The two need not match — sequence the session higher-order concerns first.
+  Do not decide the order in which the items are presented — the system arranges that.
 - PI_goal / PSV_goal: what the learner must understand (PI) and be able to explain in their
   own words (PSV). One sentence each.`;
 
-/** Assessor 출력 정규화 — 순위 결측/중복을 코드가 메운다. */
+/**
+ * Assessor 출력 정규화 — 순위 결측/중복을 코드가 메운다.
+ *
+ * `presentation_order` 는 여기서 읽지 않는다. 제시 순서는 LLM 이 아니라
+ * sortAssessment() 가 위계 규칙으로 정하므로 0 을 채워 두고, 정렬 뒤 1..N 으로 덮어쓴다.
+ * 개수 절단(MAX_TABS)도 정렬 후에 해야 위계상 앞선 항목이 잘려 나가지 않는다.
+ */
 function normalizeAssessment(raw: unknown, itemKeys: Set<string>): AssessmentItem[] {
   const list = Array.isArray(raw) ? raw : [];
   const ITEM_KEYS = itemKeys;
@@ -125,15 +130,14 @@ function normalizeAssessment(raw: unknown, itemKeys: Set<string>): AssessmentIte
     .map((t, i) => ({
       item: String(t.item),
       problem_priority: num(t.problem_priority, i + 1),
-      presentation_order: num(t.presentation_order, num(t.problem_priority, i + 1)),
+      presentation_order: 0,               // sortAssessment() 가 1..N 으로 채운다
       problem_description: str(t.problem_description),
       student_text_evidence: quotes(t.student_text_evidence),
       selection_rationale: str(t.selection_rationale),
       mediation_focus: str(t.mediation_focus),
       PI_goal: str(t.PI_goal),
       PSV_goal: str(t.PSV_goal),
-    }))
-    .slice(0, MAX_TABS);
+    }));
 }
 
 /**
@@ -141,7 +145,8 @@ function normalizeAssessment(raw: unknown, itemKeys: Set<string>): AssessmentIte
  *
  * 입력: prompt_system(과제 개요) + prompt_assessor + 평가 기준 6항목(descriptors)
  *       + knowledge_<cycle>(지식자료) + 지문 + 학생 요약문
- * 출력: 중재할 항목 목록 — 항목별 우선순위·제시순서·문제·근거·선정근거·초점·PI/PSV 목표.
+ * 출력: 중재할 항목 목록 — 항목별 우선순위·문제·근거·선정근거·초점·PI/PSV 목표.
+ *       제시 순서(= 탭 순서)는 LLM 이 정하지 않는다. sortAssessment() 가 위계로 강제한다.
  */
 export async function runAssessor(
   summary: string,
@@ -169,11 +174,20 @@ ${descriptorBlockAll(items)}`,
 
   // 최상위가 배열일 수도, 래퍼 객체일 수도 있다 (프롬프트 판에 따라 다르다).
   const root = parsed as Record<string, unknown>;
-  const assessment = normalizeAssessment(
+  const selected = normalizeAssessment(
     Array.isArray(parsed) ? parsed : root.selected_items ?? root.assessment ?? root.items,
     new Set(items.map((i) => i.key)),
   );
-  if (!assessment.length) throw new Error('Assessor 가 중재 항목을 반환하지 않았습니다 (selected_items 없음).');
+  if (!selected.length) throw new Error('Assessor 가 중재 항목을 반환하지 않았습니다 (selected_items 없음).');
+
+  // 탭 순서는 여기서 확정된다 — HOC → Mid → LOC, 같은 위계 안에서는 problem_priority 순.
+  const assessment = sortAssessment(selected);
+  const before = selected.map((t) => t.item).join(' > ');
+  const after = assessment.map((t) => t.item).join(' > ');
+  if (before !== after) {
+    // 연구 자료로도 의미가 있다: 모델이 낸 배열이 위계를 얼마나 자주 어기는지 남긴다.
+    console.warn(`[DA] Assessor 순서 보정: ${before} → ${after}`);
+  }
   return { assessment };
 }
 
